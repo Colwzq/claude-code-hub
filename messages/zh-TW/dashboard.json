@@ -1,0 +1,2157 @@
+{
+  "actions": {
+    "copy": "複製",
+    "download": "下載",
+    "copied": "已複製"
+  },
+  "title": {
+    "costRanking": "消耗排行",
+    "costRankingDescription": "查看用戶消耗排名，資料每 5 分鐘更新一次",
+    "usageLogs": "使用記錄",
+    "clients": "用戶端",
+    "userAndKeyManagement": "用戶和密鑰管理",
+    "requestMessages": "請求 Messages",
+    "activeSessions": "活躍 Session（最近 5 分鐘）",
+    "sessionMonitoring": "Session 監控",
+    "sessionMonitoringDescription": "即時顯示活躍和非活躍 Session（每 3 秒自動重新整理）",
+    "inactiveSessions": "非活躍 Session（超過 5 分鐘，僅供查看）",
+    "quotasManagement": "額度管理",
+    "quotasManagementDescription": "查看和管理所有層級的額度使用情況",
+    "usersQuotas": "用戶額度統計",
+    "keysQuotas": "密鑰額度統計",
+    "providersQuotas": "供應商額度統計",
+    "usageLogsDescription": "查看 API 調用日誌和使用統計",
+    "filterCriteria": "篩選條件",
+    "filterCriteriaDescription": "依時間、用戶、供應商等條件縮小日誌範圍"
+  },
+  "description": {
+    "viewApiCallLogs": "查看 API 呼叫日誌和使用統計",
+    "dashboard": "查看系統統計資料和監控資訊",
+    "quotas": "查看和管理所有層級的額度使用情況",
+    "clientInfo": "User-Agent 請求頭",
+    "requestMessagesDescription": "用戶端傳送的訊息內容",
+    "responseBodyDescription": "伺服器傳回的完整回覆（5分鐘 TTL）"
+  },
+  "overview": {
+    "title": "概覽",
+    "totalRequests": "總請求數",
+    "totalCost": "總成本",
+    "totalUsers": "總用戶數",
+    "totalProviders": "總供應商數",
+    "activeUsers": "活躍用戶",
+    "activeSessions": "活躍工作階段",
+    "errorRate": "錯誤率",
+    "avgResponseTime": "平均回覆時間"
+  },
+  "stats": {
+    "title": "統計",
+    "requests": "請求",
+    "cost": "費用",
+    "tokens": "Tokens",
+    "period": {
+      "hour": "最近1小時",
+      "day": "今日",
+      "week": "本週",
+      "month": "當月"
+    }
+  },
+  "logs": {
+    "title": "使用日誌",
+    "description": "查看和分析 API 呼叫記錄",
+    "filters": {
+      "user": "使用者",
+      "provider": "供應商",
+      "sessionId": "Session ID",
+      "searchUser": "搜尋使用者...",
+      "searchProvider": "搜尋供應商...",
+      "searchSessionId": "搜尋 Session ID...",
+      "noUserFound": "未找到匹配的使用者",
+      "noProviderFound": "未找到匹配的供應商",
+      "noSessionFound": "未找到符合的 Session ID",
+      "model": "Model",
+      "endpoint": "端點",
+      "status": "狀態",
+      "timeRange": "時間範圍",
+      "dateRange": "日期範圍",
+      "startTime": "開始時間",
+      "endTime": "結束時間",
+      "allUsers": "所有使用者",
+      "allKeys": "所有金鑰",
+      "selectUserFirst": "請先選擇使用者",
+      "allProviders": "所有供應商",
+      "allModels": "所有模型",
+      "allEndpoints": "所有端點",
+      "allStatusCodes": "所有狀態碼",
+      "apiKey": "API 金鑰",
+      "statusCode": "狀態碼",
+      "minRetryCount": "重試次數≥",
+      "minRetryCountPlaceholder": "輸入次數（0 表示不限）",
+      "apply": "套用篩選",
+      "reset": "重設",
+      "last7days": "近 7 天",
+      "last30days": "近 30 天",
+      "customRange": "自訂範圍",
+      "export": "匯出",
+      "exporting": "匯出中...",
+      "exportSuccess": "匯出成功",
+      "exportError": "匯出失敗",
+      "exportPreparing": "正在準備匯出...",
+      "exportProgress": "已匯出 {current} / {total} 筆",
+      "quickFilters": {
+        "today": "今天",
+        "thisWeek": "本週",
+        "errorsOnly": "僅錯誤",
+        "showRetries": "有重試"
+      },
+      "activeFilters": {
+        "title": "已啟用篩選",
+        "remove": "移除篩選",
+        "clearAll": "清除全部"
+      },
+      "groups": {
+        "time": "時間範圍",
+        "timeDesc": "依日期與時間篩選",
+        "identity": "身分資訊",
+        "identityDesc": "依使用者與金鑰篩選",
+        "request": "請求參數",
+        "requestDesc": "依供應商、模型、端點篩選",
+        "status": "狀態資訊",
+        "statusDesc": "依狀態碼與重試次數篩選"
+      }
+    },
+    "columns": {
+      "time": "時間",
+      "user": "使用者",
+      "key": "金鑰",
+      "sessionId": "Session ID",
+      "ip": "IP",
+      "provider": "供應商",
+      "model": "計費模型",
+      "endpoint": "端點",
+      "inputTokens": "輸入",
+      "outputTokens": "輸出",
+      "tokens": "Tokens",
+      "cacheWrite": "快取寫入",
+      "cacheRead": "快取讀取",
+      "cache": "快取",
+      "cost": "費用",
+      "duration": "耗時",
+      "performance": "效能",
+      "status": "狀態"
+    },
+    "stats": {
+      "title": "統計匯總",
+      "description": "當前篩選條件下的彙總統計",
+      "totalAmount": "總消耗金額",
+      "totalTokens": "總 Token 數",
+      "cacheTokens": "快取 Token",
+      "input": "輸入",
+      "output": "輸出",
+      "write": "寫入",
+      "read": "讀取",
+      "totalRequests": "總請求數",
+      "loading": "加載中..."
+    },
+    "table": {
+      "noData": "暫無資料",
+      "pagination": "共 {total} 筆記錄，第 {page} / {totalPages} 頁",
+      "prevPage": "上一頁",
+      "nextPage": "下一頁",
+      "blocked": "已攔截",
+      "nonBilling": "非計費",
+      "skipped": "已跳過",
+      "specialSettings": "特殊設定",
+      "anthropicEffort": "Effort: {effort}",
+      "times": "次數",
+      "loadedCount": "已載入 {count} 筆記錄",
+      "loadingMore": "載入更多中...",
+      "noMoreData": "已載入全部記錄",
+      "scrollToTop": "回到頂端",
+      "hideProviderColumn": "隱藏供應商欄",
+      "showProviderColumn": "顯示供應商欄",
+      "columnVisibility": "顯示/隱藏欄位"
+    },
+    "actions": {
+      "refresh": "重新整理",
+      "refreshing": "重新整理中...",
+      "stopAutoRefresh": "停止自動重新整理",
+      "startAutoRefresh": "啟用自動重新整理",
+      "view": "檢視",
+      "fullscreen": "全螢幕顯示",
+      "exitFullscreen": "退出全螢幕"
+    },
+    "error": {
+      "loadFailed": "載入失敗",
+      "loadKeysFailed": "載入密鑰列表失敗"
+    },
+    "details": {
+      "title": "請求詳情",
+      "statusTitle": "狀態: {status}",
+      "inProgress": "請求中",
+      "retrying": "Retrying",
+      "unknown": "未知狀態",
+      "success": "請求成功完成",
+      "error": "請求失敗，以下是詳細的錯誤訊息和供應商決策鏈",
+      "processing": "請求正在進行中，尚未完成",
+      "tabs": {
+        "summary": "概覽",
+        "logicTrace": "決策鏈",
+        "performance": "效能",
+        "metadata": "中繼資料"
+      },
+      "summary": {
+        "keyMetrics": "關鍵指標",
+        "totalCost": "總費用",
+        "totalTokens": "總令牌數",
+        "duration": "耗時",
+        "outputRate": "輸出速率",
+        "viewFullError": "查看完整錯誤",
+        "viewSession": "查看工作階段"
+      },
+      "specialSettings": {
+        "title": "特殊設定"
+      },
+      "skipped": {
+        "title": "跳過資訊",
+        "reason": "原因說明",
+        "warmup": "Warmup 搶答（CCH）",
+        "desc": "該請求被識別為 Warmup 探測請求，已由 CCH 直接搶答回應，未轉發上游供應商；不計費、不限流、不計入統計。"
+      },
+      "blocked": {
+        "title": "攔截資訊",
+        "type": "攔截類型",
+        "sensitiveWord": "敏感詞攔截",
+        "word": "敏感詞",
+        "matchType": "匹配類型",
+        "matchTypeContains": "包含比對",
+        "matchTypeExact": "精確匹配",
+        "matchTypeRegex": "正規表達式",
+        "matchedText": "匹配內容"
+      },
+      "sessionId": "會話 ID",
+      "messagesCount": "訊息數量",
+      "messagesLabel": "訊息",
+      "messagesUnit": "則",
+      "clientInfo": "用戶端資訊",
+      "modelRedirect": {
+        "title": "模型重新導向",
+        "requestModel": "請求模型",
+        "actualModel": "實際呼叫",
+        "billing": "計費說明",
+        "billingDescription": "系統優先使用請求模型（{original}）的價格計費。如果價格表中不存在該模型，則使用實際呼叫模型（{current}）的價格。",
+        "billingModel": "計費模型",
+        "actualModelTooltip": "實際模型: {model}",
+        "originalModelTooltip": "原始模型：{model}",
+        "billingDescription_original": "目前計費模式：使用重新導向前的原始模型（{original}）計費",
+        "billingDescription_redirected": "目前計費模式：使用重新導向後的實際模型（{current}）計費",
+        "billingOriginal": "計費: 原始",
+        "billingRedirected": "計費: 實際"
+      },
+      "modelAudit": {
+        "unifiedLabel": "模型",
+        "requestModelLabel": "請求模型",
+        "responseModelLabel": "實際回應模型",
+        "mismatchTooltip": "上游供應商實際回傳的模型與請求的模型不一致。計費仍然依據請求模型。",
+        "secondaryLineAriaLabel": "實際回應模型：{model}",
+        "arrowPrefix": "\u21b3"
+      },
+      "errorMessage": "錯誤訊息",
+      "fake200ForwardedNotice": "提示：對於串流請求，此失敗可能在串流結束後才被識別；回應內容可能已原樣透傳給用戶端。",
+      "fake200DetectedReason": "檢測原因：{reason}",
+      "fake200RetryTooltipLabel": "為何這次不能由伺服器重試？",
+      "fake200RetryTooltipTitle": "為什麼 CCH 無法在伺服器端重試這次回應",
+      "fake200RetryTooltipServerRetry": "上游已先回傳 HTTP 200，CCH 也已開始向用戶端透傳 SSE 回應體；等到後續串流事件才識別出錯誤時，這次回應已無法再由伺服器端優雅重試。",
+      "fake200RetryTooltipSessionFallback": "用戶端仍可自行重試；同一 Session 的後續請求會避開剛剛 fake200 的供應商，並繼續自動 fallback。",
+      "fake200Reasons": {
+        "emptyBody": "回應本文為空",
+        "htmlBody": "回傳了 HTML 文件（可能是錯誤頁）",
+        "jsonErrorNonEmpty": "JSON 頂層 error 欄位非空",
+        "jsonErrorMessageNonEmpty": "JSON 中 error.message 非空",
+        "jsonMessageKeywordMatch": "JSON message 欄位包含 \"error\"（啟發式）",
+        "unknown": "回應本文內容顯示錯誤"
+      },
+      "statusCodeInferredBadge": "推測",
+      "statusCodeInferredTooltip": "此狀態碼係根據回應內容推測（例如假200），可能與上游真實 HTTP 狀態碼不同。",
+      "statusCodeInferredSuffix": "（推測）",
+      "filteredProviders": "被過濾的供應商",
+      "providerChain": {
+        "title": "供應商決策鏈時間軸",
+        "totalDuration": "總耗時: {duration} 毫秒"
+      },
+      "noError": {
+        "processing": "請求正在處理中，等待回覆...",
+        "success": "請求成功，無錯誤訊息",
+        "default": "暫無詳細錯誤訊息"
+      },
+      "clickStatusCode": "點擊狀態碼查看完整時間軸",
+      "viewDetails": "查看詳情",
+      "reasons": {
+        "rateLimited": "供應商費用已達限額",
+        "circuitOpen": "斷路器開啟"
+      },
+      "billingDetails": {
+        "title": "計費詳情",
+        "input": "輸入",
+        "output": "輸出",
+        "cacheWrite5m": "快取寫入（5m）",
+        "cacheWrite1h": "快取寫入（1h）",
+        "cacheRead": "快取讀取",
+        "cacheTtl": "快取 TTL",
+        "cacheTtlSwapped": "計費 TTL（已互換）",
+        "multiplier": "供應商倍率",
+        "totalCost": "總費用",
+        "fast": "fast",
+        "fastPriority": "優先服務層級（fast 模式）",
+        "context1m": "1M 上下文",
+        "context1mEnabled": "1M 上下文視窗已啟用",
+        "pricingProvider": "計費價格供應商",
+        "pricingSourceLabel": "計費價格來源",
+        "pricingSource": {
+          "local_manual": "本地手動價格",
+          "cloud_exact": "雲端精確供應商價格",
+          "cloud_model_fallback": "回退模型的供應商價格",
+          "priority_fallback": "優先級回退價格",
+          "single_provider_top_level": "頂層單供應商價格",
+          "official_fallback": "官方價格"
+        },
+        "baseCost": "基礎費用",
+        "providerMultiplier": "供應商倍率",
+        "groupMultiplier": "分組倍率",
+        "baseTotal": "基礎合計",
+        "unitPricePer1M": "@ {price} / 1M",
+        "unit": {
+          "tokens": "tokens"
+        }
+      },
+      "performance": {
+        "title": "效能資料",
+        "ttfb": "首字節時間（TTFB）",
+        "duration": "總耗時",
+        "outputRate": "輸出速率"
+      },
+      "performanceTab": {
+        "noPerformanceData": "暫無效能資料",
+        "ttfbGauge": "首字節時間",
+        "outputRateGauge": "輸出速率",
+        "latencyBreakdown": "延遲分解",
+        "generationTime": "生成時間",
+        "assessment": {
+          "excellent": "優秀",
+          "good": "良好",
+          "warning": "警告",
+          "poor": "較差"
+        },
+        "thresholds": {
+          "ttfbGood": "TTFB < 1s",
+          "ttfbWarning": "TTFB 1-2s",
+          "ttfbPoor": "TTFB > 3s"
+        }
+      },
+      "metadata": {
+        "noMetadata": "暫無中繼資料",
+        "sessionInfo": "工作階段資訊",
+        "clientInfo": "用戶端資訊",
+        "billingInfo": "計費資訊",
+        "technicalTimeline": "技術時間軸",
+        "copyTimeline": "複製時間軸"
+      },
+      "effort": {
+        "label": "Effort",
+        "overridden": "已被供應商覆寫"
+      },
+      "logicTrace": {
+        "title": "決策鏈",
+        "noDecisionData": "暫無決策資料",
+        "providersCount": "{count} 個供應商",
+        "healthyCount": "{count} 個健康",
+        "initialSelection": "初始選擇",
+        "healthCheck": "健康檢查",
+        "prioritySelection": "優先順序選擇",
+        "attemptProvider": "嘗試: {provider}",
+        "retryAttempt": "重試 #{number}",
+        "httpStatus": "HTTP {code}{inferredSuffix}",
+        "sessionReuse": "會話複用",
+        "sessionReuseDesc": "從會話快取複用供應商",
+        "sessionReuseTitle": "會話綁定",
+        "sessionReuseSelection": "會話複用選擇",
+        "sessionReuseSelectionDesc": "從會話快取中選擇供應商",
+        "sessionInfo": "會話資訊",
+        "sessionIdLabel": "會話 ID",
+        "requestSequence": "請求序號",
+        "sessionAge": "會話年齡",
+        "reusedProvider": "複用的供應商",
+        "executeRequest": "執行請求",
+        "cacheOptimizationHint": "會話複用通過在同一對話中保持供應商親和性來優化效能，減少選擇開銷並提高快取命中率。",
+        "originDecisionTitle": "原始選擇決策",
+        "originDecisionDesc": "此會話中供應商最初被選擇的原因",
+        "originDecisionLoading": "正在載入原始決策...",
+        "originDecisionUnavailable": "原始決策記錄不可用",
+        "originDecisionExpand": "查看原始選擇"
+      }
+    },
+    "providerChain": {
+      "decisionChain": "供應商決策鏈",
+      "clickItemForDetails": "點擊步驟查看詳情"
+    },
+    "modelRedirect": {
+      "redirected": "已重新導向",
+      "targetModel": "目標模型"
+    },
+    "statusCodes": {
+      "200": "200（成功）",
+      "400": "400（錯誤請求）",
+      "401": "401（未授權）",
+      "429": "429（限流）",
+      "500": "500（服務器錯誤）",
+      "not200": "非 200（所有非成功請求）"
+    },
+    "billingDetails": {
+      "input": "輸入",
+      "output": "輸出",
+      "cacheWrite5m": "快取寫入（5m）",
+      "cacheWrite1h": "快取寫入（1h）",
+      "cacheRead": "快取讀取",
+      "cacheTtl": "快取 TTL",
+      "cacheTtlSwapped": "計費 TTL（已互換）",
+      "multiplier": "供應商倍率",
+      "totalCost": "總費用",
+      "unitPricePer1M": "@ {price} / 1M",
+      "fast": "fast",
+      "fastPriority": "優先服務層級（fast 模式）",
+      "context1m": "1M 上下文長度",
+      "context1mEnabled": "1M 上下文視窗已啟用",
+      "pricingProvider": "計費價格供應商",
+      "pricingSourceLabel": "計費價格來源",
+      "pricingSource": {
+        "local_manual": "本地手動價格",
+        "cloud_exact": "雲端精確供應商價格",
+        "cloud_model_fallback": "回退模型的供應商價格",
+        "priority_fallback": "優先級回退價格",
+        "single_provider_top_level": "頂層單供應商價格",
+        "official_fallback": "官方價格"
+      },
+      "baseCost": "基礎費用",
+      "providerMultiplier": "供應商倍率",
+      "groupMultiplier": "分組倍率",
+      "baseTotal": "基礎合計",
+      "unit": {
+        "tokens": "tokens"
+      }
+    }
+  },
+  "leaderboard": {
+    "title": "費用排行榜",
+    "description": "查看用戶和密鑰的成本統計排名",
+    "todayTitle": "今日排行",
+    "viewAll": "檢視全部",
+    "userRankings": "使用者排名",
+    "providerRankings": "供應商排名",
+    "modelRankings": "模型排名",
+    "noData": "今日暫無資料",
+    "requests": "請求",
+    "tokens": "Token",
+    "tabs": {
+      "users": "使用者排名",
+      "keys": "密鑰排名",
+      "userRanking": "使用者排名",
+      "userCacheHitRateRanking": "使用者快取命中率排行",
+      "providerRanking": "供應商排名",
+      "providerCacheHitRateRanking": "供應商快取命中率排行",
+      "modelRanking": "模型排名",
+      "primaryUser": "使用者",
+      "primaryProvider": "供應商",
+      "primaryModel": "模型榜",
+      "secondaryCost": "成本排名",
+      "secondaryCacheHit": "快取命中榜",
+      "dailyRanking": "今天",
+      "weeklyRanking": "本週",
+      "monthlyRanking": "當月",
+      "allTimeRanking": "全期間"
+    },
+    "dateRange": {
+      "to": "到",
+      "prevPeriod": "上一週期",
+      "nextPeriod": "下一週期",
+      "customRange": "自訂日期範圍"
+    },
+    "columns": {
+      "rank": "名次",
+      "name": "名稱",
+      "totalCost": "總成本",
+      "totalRequests": "總請求數",
+      "avgCost": "平均費用",
+      "lastActive": "最後活躍時間",
+      "user": "使用者",
+      "requests": "請求數",
+      "tokens": "Token 數",
+      "consumedAmount": "消耗金額",
+      "provider": "供應商",
+      "model": "Model",
+      "cost": "費用",
+      "cacheHitRequests": "快取命中請求數（納入快取命中率計算的請求總數）",
+      "cacheHitRate": "快取命中率",
+      "cacheReadTokens": "快取讀取 Token 數",
+      "totalTokens": "總 Token 數",
+      "cacheCreationConsumedAmount": "快取建立消耗金額",
+      "totalConsumedAmount": "總消耗金額",
+      "successRate": "成功率（%）",
+      "avgResponseTime": "平均回覆時間",
+      "avgTtfbMs": "平均 TTFB（ms）",
+      "avgTokensPerSecond": "平均輸出速率",
+      "avgCostPerRequest": "平均每次請求成本",
+      "avgCostPerMillionTokens": "平均每百萬 Token 成本",
+      "unknownModel": "未知",
+      "successRateUnavailable": "不適用",
+      "successRateBasisDisclosure": "在 redirected 計費模型模式下，一列可能合併多個原始模型，因此這裡不顯示成功率以避免口徑誤導。"
+    },
+    "expandModelStats": "展開模型詳情",
+    "collapseModelStats": "收起模型詳情",
+    "states": {
+      "loading": "載入中...",
+      "noData": "暫無資料",
+      "todayNoData": "今日暫無資料",
+      "weekNoData": "本週暫無資料",
+      "monthNoData": "本月暫無資料",
+      "fetchFailed": "取得排行榜資料失敗"
+    },
+    "permission": {
+      "title": "需要權限",
+      "restricted": "存取受限",
+      "description": "排行榜功能需要管理員開啟「允許查看全站使用量」權限。",
+      "adminAction": "開啟此權限。",
+      "userAction": "請聯繫管理員開啟此權限。",
+      "systemSettings": "系統設定"
+    },
+    "filters": {
+      "userTagsPlaceholder": "按使用者標籤篩選...",
+      "userGroupsPlaceholder": "按使用者群組篩選..."
+    },
+    "userInsights": {
+      "title": "使用者洞察",
+      "backToLeaderboard": "返回排行榜",
+      "overview": "概覽",
+      "keyTrend": "Key 使用趨勢",
+      "modelBreakdown": "模型明細",
+      "requests": "請求數",
+      "cost": "費用",
+      "avgResponseTime": "平均回應時間",
+      "errorRate": "錯誤率",
+      "timeRange": {
+        "today": "今日",
+        "7days": "近 7 天",
+        "30days": "近 30 天",
+        "thisMonth": "本月"
+      },
+      "unknownModel": "未知模型",
+      "noData": "暫無資料",
+      "dateRange": "日期範圍",
+      "allTime": "全部時間",
+      "providerBreakdown": "供應商明細",
+      "unknownProvider": "未知供應商",
+      "apiKey": "API 金鑰",
+      "provider": "供應商",
+      "model": "模型",
+      "allKeys": "全部金鑰",
+      "allProviders": "全部供應商",
+      "allModels": "全部模型",
+      "dimensions": "維度",
+      "filters": "篩選",
+      "loadError": "資料載入失敗"
+    }
+  },
+  "sessions": {
+    "title": "活躍工作階段",
+    "description": "即時監控目前活躍的 API 工作階段",
+    "monitoring": "會話監控",
+    "monitoringDescription": "即時顯示活躍和非活躍會話（每 3 秒自動重新整理）",
+    "activeSessions": "活躍會話（最近 5 分鐘）",
+    "inactiveSessions": "非活躍會話（超過 5 分鐘，僅供查看）",
+    "columns": {
+      "sessionId": "會話 ID",
+      "user": "使用者",
+      "key": "金鑰",
+      "provider": "供應商",
+      "model": "Model",
+      "startTime": "開始時間",
+      "lastActivity": "最後活動",
+      "requestCount": "請求數",
+      "totalInput": "總輸入",
+      "totalOutput": "總輸出",
+      "totalCost": "總成本",
+      "totalDuration": "總耗時",
+      "status": "狀態",
+      "actions": "動作"
+    },
+    "table": {
+      "count": "共 {count} 個{type} 會話",
+      "active": "活躍",
+      "inactive": "非活躍",
+      "notCountedInConcurrency": "（不計入並發數）",
+      "refreshing": "重新整理中...",
+      "noActiveSessions": "暫無活躍 Session"
+    },
+    "pagination": {
+      "total": "個"
+    },
+    "details": {
+      "title": "會話訊息",
+      "messages": "訊息列表",
+      "info": "會話資訊",
+      "timeline": "時間線",
+      "overview": "Session 概覽",
+      "overviewDescription": "彙總統計資訊",
+      "providersAndModels": "供應商與模型",
+      "providersAndModelsDescription": "使用的供應商與模型",
+      "tokenUsage": "Token 使用（總量）",
+      "tokenUsageDescription": "所有請求的累計統計",
+      "costInfo": "成本資訊（總計）",
+      "costInfoDescription": "所有請求的累計費用",
+      "totalRequests": "總請求數",
+      "firstRequest": "首次請求",
+      "lastRequest": "最後請求",
+      "totalDuration": "總耗時",
+      "totalInput": "總輸入",
+      "totalOutput": "總輸出",
+      "cacheCreation": "快取建立",
+      "cacheTtlMixed": "混合模式",
+      "cacheRead": "快取讀取",
+      "total": "總計",
+      "totalFee": "總費用",
+      "providers": "供應商",
+      "models": "Model",
+      "noDetailedData": "暫無詳細資料",
+      "storageTip": "未找到詳細資料。可能原因：Redis 未設定/不可用（REDIS_URL + ENABLE_RATE_LIMIT=true）、資料已過期（SESSION_TTL，預設 300 秒），或已停用回應本文儲存（STORE_SESSION_RESPONSE_BODY=false，僅影響回應本文）。如需儲存未脫敏的 messages，請設定 STORE_SESSION_MESSAGES=true。",
+      "clientInfo": "用戶端資訊",
+      "requestHeaders": "請求頭",
+      "requestBody": "請求體",
+      "requestMessages": "請求訊息",
+      "viewMode": "視圖",
+      "before": "處理前",
+      "after": "處理後",
+      "viewModeTooltip": "處理前顯示 CCH 在最終送往上游或最終回傳給用戶端之前記錄的請求與回應快照；處理後顯示 CCH 最終送往上游的請求，以及最終回傳給用戶端的回應。",
+      "viewModeTooltipLabel": "說明處理前與處理後視圖",
+      "snapshotSourceClient": "用戶端",
+      "snapshotSourceUpstream": "上游",
+      "specialSettings": "特殊設定",
+      "specialSettingsStaticNote": "特殊設定是衍生出的稽核結果，不區分處理前或處理後。",
+      "requestMessagesDescription": "用戶端傳送的訊息內容",
+      "afterRequestMessagesEmpty": "處理後的請求內容沒有根層級 messages 欄位，請改看 {requestBodyLabel}。",
+      "specialSettingsEmpty": "本次請求沒有記錄特殊設定。",
+      "responseHeaders": "響應頭",
+      "responseBody": "響應體",
+      "responseBodyDescription": "伺服器傳回的完整回覆（5分鐘 TTL）",
+      "noHeaders": "無資料",
+      "noData": "暫無資料",
+      "prevRequest": "上一條",
+      "nextRequest": "下一條"
+    },
+    "actions": {
+      "back": "返回上一頁",
+      "view": "檢視",
+      "copy": "複製",
+      "download": "下載",
+      "copyMessages": "複製請求頭與請求體",
+      "downloadMessages": "下載請求頭與請求體",
+      "copied": "已複製",
+      "copyResponse": "複製回覆主體",
+      "terminate": "終止",
+      "terminateTitle": "終止會話",
+      "terminateDescription": "確定要終止此會話嗎？終止後會清除供應商綁定，下一次請求將重新選擇供應商。",
+      "sessionIdLabel": "會話 ID：{sessionId}",
+      "cancel": "取消操作",
+      "confirmTerminate": "確認終止",
+      "terminating": "終止中...",
+      "terminateSuccess": "會話已成功終止",
+      "terminateFailed": "終止會話失敗",
+      "terminateSelected": "終止所選",
+      "selectedCount": "已選 {count} 個",
+      "selectAll": "全選",
+      "selectSessionLabel": "選擇會話",
+      "multiSelect": "多選",
+      "cancelMultiSelect": "取消多選",
+      "terminateSessionTitle": "終止會話",
+      "terminateSessionDescription": "確定要終止此會話嗎？此操作無法撤銷。",
+      "batchTerminateSuccess": "已終止 {count} 個會話",
+      "batchTerminatePartial": "無權限 {unauthorized} 個 · 未找到 {missing} 個",
+      "batchTerminateAllowedFailed": "有權限但終止失敗 {count} 個",
+      "batchTerminateNone": "沒有任何會話被終止",
+      "noSelection": "請至少選擇一個會話"
+    },
+    "codeDisplay": {
+      "raw": "原始內容",
+      "pretty": "格式化",
+      "searchPlaceholder": "搜尋",
+      "expand": "展開",
+      "collapse": "摺疊",
+      "themeAuto": "跟隨系統",
+      "themeLight": "淺色",
+      "themeDark": "暗色",
+      "noMatches": "沒有符合結果",
+      "onlyMatches": "僅符合行",
+      "showAll": "顯示全部",
+      "prevPage": "上一頁",
+      "nextPage": "下一頁",
+      "pageInfo": "第 {page} / {total} 頁",
+      "sseEvent": "事件類型",
+      "sseData": "資料",
+      "hardLimit": {
+        "title": "內容過大",
+        "size": "大小：{sizeMB} MB（{sizeBytes} 位元組）",
+        "maximum": "上限：{maxSizeMB} MB 或 {maxLines} 行（擇一）",
+        "hint": "請下載檔案以查看完整內容。",
+        "download": "下載"
+      }
+    },
+    "status": {
+      "loading": "載入中...",
+      "loadError": "載入失敗",
+      "fetchFailed": "取得失敗",
+      "unknownError": "未知錯誤",
+      "storageNotEnabled": "未儲存",
+      "storageNotEnabledHint": "提示：請檢查 REDIS_URL 與 ENABLE_RATE_LIMIT=true（用於 Session 詳情快取）；如需儲存未脫敏的 messages，請設定 STORE_SESSION_MESSAGES=true。"
+    },
+    "errors": {
+      "copyFailed": "複製失敗"
+    },
+    "requestList": {
+      "title": "請求列表",
+      "noRequests": "暫無請求記錄",
+      "fetchFailed": "取得請求列表失敗",
+      "unknownError": "未知錯誤",
+      "prev": "上一頁",
+      "next": "下一頁",
+      "orderAsc": "切換為正序（最早的在前）",
+      "orderDesc": "切換為倒序（最新的在前）"
+    },
+    "back": "返回上一頁",
+    "loadingError": "載入失敗"
+  },
+  "quotas": {
+    "title": "額度管理",
+    "description": "管理使用者、金鑰和供應商的使用額度",
+    "tabs": {
+      "overview": "概覽",
+      "users": "用戶額度",
+      "keys": "密鑰額度",
+      "providers": "供應商額度"
+    },
+    "columns": {
+      "name": "名稱",
+      "limit": "額度",
+      "used": "已使用",
+      "remaining": "剩餘",
+      "resetTime": "重設時間",
+      "status": "狀態"
+    },
+    "labels": {
+      "byName": "按名稱",
+      "byUsageRate": "依使用率"
+    },
+    "users": {
+      "title": "用戶額度統計",
+      "totalUsers": "共 {count} 個用戶"
+    },
+    "keys": {
+      "title": "密鑰額度統計",
+      "totalKeysInfo": "共 {userCount} 個使用者，{keyCount} 個金鑰",
+      "setKeyQuota": "設定金鑰額度",
+      "setUserQuota": "設定使用者額度",
+      "onlyKeyQuota": "僅金鑰額度",
+      "onlyUserQuota": "僅使用者額度",
+      "success": "使用者額度設定成功"
+    },
+    "providers": {
+      "title": "供應商額度統計",
+      "totalProviders": "共 {count} 個供應商"
+    }
+  },
+  "labels": {
+    "byName": "按名稱",
+    "byUsageRate": "依使用率"
+  },
+  "all": "全部",
+  "nav": {
+    "mobileMenuTitle": "導覽選單",
+    "dashboard": "儀表板",
+    "usageLogs": "使用記錄",
+    "leaderboard": "排行",
+    "modelMarket": "模型廣場",
+    "availability": "可用性監控",
+    "myQuota": "我的額度",
+    "quotasManagement": "額度管理",
+    "userManagement": "使用者管理",
+    "providers": "供應商管理",
+    "auditLogs": "稽核日誌",
+    "documentation": "文件",
+    "systemSettings": "系統設定",
+    "feedback": "意見回饋",
+    "login": "登入",
+    "logout": "登出"
+  },
+  "statistics": {
+    "title": "使用統計",
+    "cost": "消費金額",
+    "calls": "API 呼叫次數",
+    "totalCost": "總消費金額",
+    "totalCalls": "總 API 呼叫次數",
+    "timeRange": {
+      "today": "本日",
+      "todayDescription": "今天的使用情況",
+      "7days": "過去 7 天",
+      "7daysDescription": "過去 7 天的使用情況",
+      "30days": "過去 30 天",
+      "30daysDescription": "過去 30 天的使用情況",
+      "thisMonth": "這個月",
+      "thisMonthDescription": "本月的使用情況",
+      "default": "使用情況"
+    },
+    "mode": {
+      "keys": "僅顯示您名下各金鑰的使用統計",
+      "mixed": "展示您的金鑰明細和其他使用者彙總",
+      "users": "展示所有使用者使用統計"
+    },
+    "legend": {
+      "selectAll": "全選",
+      "deselectAll": "取消全選",
+      "selected": "已選"
+    },
+    "chartMode": {
+      "label": "顯示模式",
+      "overlay": "對比",
+      "stacked": "堆疊"
+    },
+    "states": {
+      "noData": "暫無統計資料",
+      "fetchFailed": "取得統計資料失敗"
+    },
+    "othersAggregate": "其他使用者"
+  },
+  "errors": {
+    "fetchSystemSettingsFailed": "取得系統設定失敗",
+    "fetchFailed": "取得失敗",
+    "fetchSessionListFailed": "取得 session 清單失敗"
+  },
+  "keyList": {
+    "columns": {
+      "name": "名稱",
+      "key": "金鑰",
+      "todayCalls": "今日呼叫",
+      "todayCost": "今日花費",
+      "lastUsed": "最後使用",
+      "actions": "動作"
+    },
+    "detailsButton": "詳細資訊",
+    "modelStats": "模型統計",
+    "modelStatsColumns": {
+      "model": "Model",
+      "calls": "呼叫次數",
+      "cost": "花費"
+    },
+    "limitUsage": "額度使用情況",
+    "copyKeyTooltip": "複製完整金鑰",
+    "showKeyTooltip": "顯示完整金鑰",
+    "hideKeyTooltip": "隱藏金鑰",
+    "copyFailed": "複製失敗:",
+    "timesUnit": "次數",
+    "provider": "供應商",
+    "neverUsed": "從未使用",
+    "viewLogsTooltip": "查看詳細記錄",
+    "logsButton": "記錄",
+    "emptyState": {
+      "title": "暫無金鑰",
+      "description": "可點選右上角「新增金鑰」按鈕新增金鑰"
+    }
+  },
+  "userList": {
+    "title": "使用者列表",
+    "badge": "{count} 個金鑰",
+    "activeKeys": "活躍金鑰",
+    "totalKeys": "總金鑰數",
+    "expiresAt": "過期時間",
+    "status": {
+      "active": "已啟用",
+      "expiringSoon": "即將過期",
+      "expired": "已過期",
+      "disabled": "已停用"
+    },
+    "actions": {
+      "renew": "續期",
+      "renew30d": "續期 30 天",
+      "renew90d": "續期 90 天",
+      "renew1y": "續期 1 年",
+      "renewCustom": "自訂...",
+      "customPrompt": "請輸入新的過期日期（YYYY-MM-DD），取消請留空",
+      "invalidDate": "請輸入有效日期",
+      "enable": "啟用",
+      "disable": "停用",
+      "success": "操作完成",
+      "failed": "操作失敗，請稍後再試"
+    },
+    "emptyState": {
+      "title": "暫無使用者",
+      "description": "您還沒有建立任何使用者。使用者是管理 API 金鑰和使用限額的基礎單位，建立第一個使用者開始使用吧！",
+      "action": "建立第一個使用者"
+    },
+    "addUser": "新增使用者"
+  },
+  "keyListHeader": {
+    "todayUsage": "今日使用量",
+    "userStatus": {
+      "disabled": "已禁用",
+      "expired": "已過期",
+      "expiringSoon": "即將過期",
+      "active": "已啟用"
+    },
+    "allowedModels": {
+      "label": "允許的模型",
+      "noRestrictions": "允許的模型：無限制"
+    },
+    "expiresAt": "到期時間",
+    "proxyStatus": {
+      "loading": "代理狀態載入中",
+      "fetchFailed": "代理狀態取得失敗",
+      "noStatus": "暫無代理狀態",
+      "activeRequests": "活躍請求",
+      "lastRequest": "最近請求",
+      "noRecord": "暫無記錄",
+      "timeAgo": {
+        "justNow": "剛剛",
+        "secondsAgo": "{count}秒前",
+        "minutesAgo": "{count}分鐘前",
+        "hoursAgo": "{count}小時前",
+        "daysAgo": "{count} 天前"
+      }
+    },
+    "addKey": "新增金鑰",
+    "keyCreatedDialog": {
+      "title": "金鑰建立成功",
+      "description": "您的 API 金鑰已成功建立。請務必複製並妥善保存，此金鑰僅顯示一次。",
+      "apiKeyLabel": "API 金鑰",
+      "warningText": "請在關閉前複製並儲存，關閉後將無法再次檢視此金鑰",
+      "httpWarningText": "偵測到 HTTP 存取，瀏覽器限制無法使用複製功能。請點擊眼睛圖示顯示金鑰後手動複製。",
+      "copyTooltip": "複製到剪貼簿",
+      "showTooltip": "顯示完整金鑰",
+      "hideTooltip": "隱藏金鑰",
+      "closeButton": "關閉"
+    },
+    "allowedClients": {
+      "label": "允許的用戶端",
+      "noRestrictions": "允許的用戶端：無限制"
+    }
+  },
+  "keyLimitUsage": {
+    "loading": "載入中...",
+    "error": "取得失敗",
+    "networkError": "網路錯誤",
+    "cost5h": "5小時消費",
+    "costDaily": "每日消費",
+    "costWeekly": "週消費",
+    "costMonthly": "月消費",
+    "concurrentSessions": "並發 Session",
+    "noLimit": "無額度限制"
+  },
+  "addKeyForm": {
+    "title": "新增金鑰",
+    "description": "為目前使用者建立新的 API 金鑰，金鑰值將自動產生。",
+    "submitText": "確認建立",
+    "loadingText": "建立中...",
+    "keyName": {
+      "label": "金鑰名稱",
+      "placeholder": "請輸入金鑰名稱"
+    },
+    "expiresAt": {
+      "label": "過期時間",
+      "placeholder": "選擇過期時間",
+      "description": "留空表示永不過期"
+    },
+    "canLoginWebUi": {
+      "label": "允許登入 Web UI",
+      "description": "關閉後，此金鑰僅可用於 API 呼叫，無法登入管理後台"
+    },
+    "limit5hUsd": {
+      "label": "5小時消費上限（USD）",
+      "placeholder": "留空表示無限制",
+      "description": "5小時內最大消費金額",
+      "descriptionWithUserLimit": "5小時內最大消費金額（使用者上限：{limit}）"
+    },
+    "limitDailyUsd": {
+      "label": "每日消費上限（USD）",
+      "placeholder": "留空表示無限制",
+      "description": "每日最大消費金額"
+    },
+    "dailyResetMode": {
+      "label": "每日重設模式",
+      "options": {
+        "fixed": "固定時間重設",
+        "rolling": "滾動視窗（24小時）"
+      },
+      "desc": {
+        "fixed": "每天在指定時間重設額度",
+        "rolling": "從首次請求開始計算24小時滾動視窗"
+      }
+    },
+    "dailyResetTime": {
+      "label": "每日重設時間",
+      "placeholder": "HH:mm",
+      "description": "每日限額的重設時間（使用系統時區）"
+    },
+    "limitWeeklyUsd": {
+      "label": "週消費上限（USD）",
+      "placeholder": "留空表示無限制",
+      "description": "每週最大消費金額",
+      "descriptionWithUserLimit": "每週最大消費金額（使用者上限：{limit}）"
+    },
+    "limitMonthlyUsd": {
+      "label": "月消費上限（USD）",
+      "placeholder": "留空表示無限制",
+      "description": "每月最大消費金額",
+      "descriptionWithUserLimit": "每月最大消費金額（使用者上限：{limit}）"
+    },
+    "limitTotalUsd": {
+      "label": "總消費上限（USD）",
+      "placeholder": "留空表示無限制",
+      "description": "累計消費上限（不重置）",
+      "descriptionWithUserLimit": "不能超過使用者總限額（{limit}）"
+    },
+    "limitConcurrentSessions": {
+      "label": "並發 Session 上限",
+      "placeholder": "0 表示無限制",
+      "description": "同時執行的對話數量",
+      "descriptionWithUserLimit": "最大 Session 數（使用者上限：{limit}）"
+    },
+    "providerGroup": {
+      "label": "供應商分組",
+      "placeholder": "輸入供應商分組標籤，按 Enter 新增",
+      "description": "供應商分組（預設：default）",
+      "defaultDescription": "default 分組包含所有未設定 groupTag 的供應商",
+      "descriptionWithUserGroup": "供應商分組（預設：default；使用者分組：{group}）"
+    },
+    "cacheTtl": {
+      "label": "Cache TTL 覆寫",
+      "description": "強制為包含 cache_control 的請求設定 Anthropic prompt cache TTL。",
+      "options": {
+        "inherit": "不覆寫（跟隨供應商/客戶端）",
+        "5m": "5m",
+        "1h": "1h"
+      }
+    },
+    "successTitle": "金鑰建立成功",
+    "successDescription": "您的 API 金鑰已成功建立。",
+    "generatedKey": {
+      "label": "產生的金鑰",
+      "hint": "您可以在金鑰列表中管理此金鑰（啟用/停用、設定限額等），但完整金鑰僅顯示一次，請立即複製並妥善保存"
+    },
+    "errors": {
+      "userIdMissing": "使用者 ID 不存在",
+      "createFailed": "建立失敗，請稍後重試",
+      "noKeyReturned": "建立成功但未傳回金鑰"
+    },
+    "limit5hResetMode": {
+      "label": "5 小時重設模式",
+      "options": {
+        "fixed": "固定視窗",
+        "rolling": "滾動視窗（5 小時）"
+      },
+      "desc": {
+        "fixed": "從首次成功記帳開始鎖定 5 小時固定視窗",
+        "rolling": "依最近 5 小時滾動視窗統計額度"
+      }
+    }
+  },
+  "userForm": {
+    "title": {
+      "add": "新增使用者",
+      "edit": "編輯使用者"
+    },
+    "description": {
+      "add": "建立新使用者，系統將自動為其產生預設金鑰。",
+      "edit": "修改使用者的基本資訊。"
+    },
+    "submitText": {
+      "add": "確認建立",
+      "edit": "儲存修改"
+    },
+    "loadingText": {
+      "add": "建立中...",
+      "edit": "儲存中..."
+    },
+    "username": {
+      "label": "使用者名稱",
+      "placeholder": "請輸入使用者名稱"
+    },
+    "note": {
+      "label": "備註",
+      "placeholder": "請輸入備註（可選）",
+      "description": "用於描述使用者的用途或備註資訊"
+    },
+    "providerGroup": {
+      "label": "供應商分組",
+      "placeholder": "例如：default 或 premium,economy（多個以逗號分隔）",
+      "description": "使用者供應商分組（預設：default）。default 分組包含所有未設定 groupTag 的供應商。"
+    },
+    "tags": {
+      "label": "使用者標籤",
+      "placeholder": "輸入標籤（按 Enter 新增）",
+      "description": "為使用者新增標籤，便於分類和篩選（最多20個，每個最長32字元）"
+    },
+    "rpm": {
+      "label": "RPM 限制",
+      "placeholder": "每分鐘請求數限制",
+      "description": "預設值：{default}，範圍：1-10000"
+    },
+    "dailyQuota": {
+      "label": "每日額度",
+      "placeholder": "每日消費額度限制",
+      "helperText": "設置為 0 表示無限制",
+      "description": "預設值：${default}，範圍：$0.01-$1000"
+    },
+    "limit5hUsd": {
+      "label": "5小時消費上限（USD）",
+      "placeholder": "留空表示無限制",
+      "description": "5小時內最大消費金額"
+    },
+    "limitWeeklyUsd": {
+      "label": "週消費上限（USD）",
+      "placeholder": "留空表示無限制",
+      "description": "每週最大消費金額"
+    },
+    "limitMonthlyUsd": {
+      "label": "月消費上限（USD）",
+      "placeholder": "留空表示無限制",
+      "description": "每月最大消費金額"
+    },
+    "limitConcurrentSessions": {
+      "label": "並發 Session 上限",
+      "placeholder": "0 表示無限制",
+      "description": "同時執行的對話數量"
+    },
+    "isEnabled": {
+      "label": "啟用使用者",
+      "description": "停用後使用者將無法使用 API"
+    },
+    "expiresAt": {
+      "label": "到期時間",
+      "placeholder": "留空表示永不過期",
+      "description": "使用者過期後將自動停用",
+      "pastWarning": "選擇的日期已在過去，儲存後使用者將立即到期並被停用。"
+    },
+    "allowedClients": {
+      "label": "允許的用戶端",
+      "description": "限制哪些 CLI/IDE 用戶端可以使用此帳戶。留空表示無限制。",
+      "customLabel": "自訂用戶端模式",
+      "customPlaceholder": "輸入模式（如 'my-ide'、'codex-*'）"
+    },
+    "allowedModels": {
+      "label": "允許的模型",
+      "placeholder": "輸入模型名稱（按 Enter 新增）",
+      "description": "限制使用者只能使用指定的 AI 模型。留空表示無限制（最多 50 個模型，每個最長 64 字元）"
+    }
+  },
+  "deleteKeyConfirm": {
+    "title": "確認刪除金鑰",
+    "description": "您確定要刪除金鑰「{name}」嗎？\n{maskedKey}\n此操作無法復原，刪除後所有使用此金鑰的應用程式將無法存取。",
+    "cancel": "取消刪除",
+    "confirm": "確認刪除",
+    "confirmLoading": "刪除中...",
+    "errors": {
+      "deleteFailed": "刪除失敗",
+      "retryError": "刪除失敗，請稍後重試"
+    }
+  },
+  "keyActions": {
+    "edit": "編輯",
+    "delete": "刪除",
+    "editAriaLabel": "編輯金鑰",
+    "deleteAriaLabel": "刪除金鑰"
+  },
+  "userActions": {
+    "edit": "編輯使用者",
+    "delete": "刪除使用者",
+    "editAriaLabel": "編輯使用者",
+    "deleteAriaLabel": "刪除使用者"
+  },
+  "availability": {
+    "title": "供應商可用性監控",
+    "description": "即時監控供應商的可用性狀態和效能指標",
+    "nav": "可用性監控",
+    "tabs": {
+      "provider": "供應商可用性",
+      "endpoint": "端點健康"
+    },
+    "overview": {
+      "systemAvailability": "系統可用性",
+      "avgLatency": "平均延遲",
+      "errorRate": "錯誤率",
+      "activeProbes": "活躍探測",
+      "load": "負載"
+    },
+    "timeRange": {
+      "label": "時間範圍",
+      "15min": "15 分鐘",
+      "1h": "1 小時",
+      "6h": "6 小時",
+      "24h": "24 小時",
+      "7d": "7 天",
+      "last15min": "最近 15 分鐘",
+      "last1h": "最近 1 小時",
+      "last6h": "最近 6 小時",
+      "last24h": "最近 24 小時",
+      "last7d": "近 7 天",
+      "custom": "自訂"
+    },
+    "laneChart": {
+      "title": "供應商可用性時間軸",
+      "noData": "暫無資料",
+      "requests": "{count} 個請求",
+      "availability": "可用性 {value}%",
+      "noRequests": "無請求",
+      "denseData": "密集",
+      "sparseData": "稀疏",
+      "latency": "延遲"
+    },
+    "latencyChart": {
+      "title": "延遲分佈",
+      "p50": "P50",
+      "p95": "P95",
+      "p99": "P99",
+      "noData": "暫無延遲資料"
+    },
+    "latencyCurve": {
+      "title": "延遲趨勢",
+      "noData": "暫無延遲資料",
+      "avg": "平均",
+      "min": "最小",
+      "max": "最大",
+      "latency": "延遲"
+    },
+    "terminal": {
+      "title": "探測日誌",
+      "live": "即時",
+      "download": "下載日誌",
+      "noLogs": "暫無探測日誌",
+      "manual": "手動",
+      "auto": "自動",
+      "filterPlaceholder": "篩選日誌..."
+    },
+    "probeGrid": {
+      "title": "端點狀態",
+      "noEndpoints": "未設定端點",
+      "lastProbe": "最後探測",
+      "status": {
+        "unknown": "未知",
+        "healthy": "健康",
+        "unhealthy": "異常"
+      }
+    },
+    "endpoint": {
+      "selectVendor": "選擇供應商",
+      "selectType": "選擇類型"
+    },
+    "confidence": {
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "lowTooltip": "請求數少於 {count}，資料可能不具代表性。",
+      "mediumTooltip": "請求量適中，資料較為可靠。",
+      "highTooltip": "請求量充足，資料可靠。"
+    },
+    "actions": {
+      "refresh": "重新整理",
+      "refreshing": "重新整理中...",
+      "autoRefresh": "自動重新整理",
+      "stopAutoRefresh": "停止自動重新整理",
+      "viewDetails": "檢視詳情",
+      "testProvider": "測試供應商",
+      "retry": "重試",
+      "probeNow": "立即探測",
+      "probing": "探測中...",
+      "probeAll": "探測全部",
+      "probeSuccess": "探測成功",
+      "probeFailed": "探測失敗"
+    },
+    "status": {
+      "green": "良好",
+      "red": "異常",
+      "unknown": "不明"
+    },
+    "statusDescription": {
+      "green": "服務正常，請求成功",
+      "red": "服務異常或不可用",
+      "unknown": "暫無資料"
+    },
+    "metrics": {
+      "systemAvailability": "系統可用性",
+      "totalRequests": "總請求數",
+      "successRate": "成功率（%）",
+      "avgLatency": "平均延遲",
+      "p50Latency": "P50 延遲",
+      "p95Latency": "P95 延遲",
+      "p99Latency": "P99 延遲",
+      "lastRequest": "最後請求",
+      "requestCount": "請求數"
+    },
+    "filters": {
+      "provider": "供應商",
+      "allProviders": "全部供應商",
+      "includeDisabled": "包含已停用"
+    },
+    "sort": {
+      "label": "排序方式",
+      "availability": "可用度",
+      "name": "名稱",
+      "requests": "請求數"
+    },
+    "columns": {
+      "provider": "供應商",
+      "type": "類型",
+      "status": "狀態",
+      "availability": "可用度",
+      "requests": "請求數",
+      "successRate": "成功率（%）",
+      "avgLatency": "平均延遲",
+      "lastRequest": "最後請求",
+      "actions": "動作"
+    },
+    "chart": {
+      "title": "可用性趨勢",
+      "description": "依時間段統計的可用性變化",
+      "availabilityScore": "可用性評分",
+      "requestVolume": "請求量",
+      "latencyTrend": "延遲趨勢",
+      "noData": "暫無資料"
+    },
+    "details": {
+      "title": "供應商詳情",
+      "overview": "概覽",
+      "timeBuckets": "時間分段",
+      "greenCount": "成功請求",
+      "redCount": "失敗請求"
+    },
+    "states": {
+      "loading": "載入中...",
+      "error": "載入失敗",
+      "noProviders": "暫無供應商",
+      "noData": "暫無可用性資料",
+      "fetchFailed": "取得可用性資料失敗"
+    },
+    "legend": {
+      "green": "優秀（可用性 95%+）",
+      "lime": "良好（可用性 80-95%）",
+      "orange": "警告（可用性 50-80%）",
+      "red": "異常（可用性 <50%）",
+      "noData": "無資料"
+    },
+    "summary": {
+      "title": "可用度摘要",
+      "healthyProviders": "健康供應商",
+      "unhealthyProviders": "異常供應商",
+      "unknownProviders": "無資料",
+      "totalProviders": "供應商總數"
+    },
+    "heatmap": {
+      "bucketSize": "時間分段",
+      "minutes": "分鐘",
+      "requests": "請求",
+      "noData": "無資料",
+      "noRequests": "無請求"
+    },
+    "probeHistory": {
+      "title": "端點探測歷史",
+      "description": "查看探測日誌並手動觸發特定端點的探測",
+      "selectVendor": "選擇供應商",
+      "selectType": "選擇供應商類型",
+      "selectEndpoint": "選擇端點",
+      "noEndpoints": "未找到端點",
+      "probeNow": "立即探測",
+      "probing": "探測中...",
+      "columns": {
+        "time": "時間",
+        "method": "方法",
+        "status": "狀態碼",
+        "latency": "延遲",
+        "error": "錯誤訊息"
+      },
+      "success": "成功",
+      "manual": "手動探測",
+      "auto": "自動探測",
+      "probeSuccess": "探測成功",
+      "probeFailed": "探測失敗"
+    },
+    "toast": {
+      "refreshSuccess": "可用性資料已重新整理",
+      "refreshFailed": "重新整理失敗，請重試"
+    }
+  },
+  "rateLimits": {
+    "title": "限流事件統計",
+    "description": "查看與分析限流事件的統計資料",
+    "loading": "載入中...",
+    "error": "載入失敗",
+    "totalEvents": "總事件數",
+    "avgUsage": "平均使用率（%）",
+    "affectedUsers": "受影響使用者數",
+    "noData": "無資料",
+    "noDataHint": "在選定的時間範圍內沒有限流事件",
+    "filters": {
+      "startTime": "開始時間",
+      "endTime": "結束時間",
+      "user": "使用者",
+      "provider": "供應商",
+      "limitType": "限流類型",
+      "allUsers": "全部使用者",
+      "allProviders": "全部供應商",
+      "allLimitTypes": "全部類型",
+      "apply": "套用篩選",
+      "reset": "重設",
+      "loading": "載入中...",
+      "limitTypes": {
+        "rpm": "RPM 限流",
+        "usd_5h": "5 小時消費限流",
+        "usd_weekly": "週消費限流",
+        "usd_monthly": "月消費限流",
+        "concurrent_sessions": "並發 Session 限流",
+        "daily_quota": "每日額度限流"
+      }
+    },
+    "chart": {
+      "title": "限流事件時間軸",
+      "description": "依小時統計的限流事件趨勢",
+      "total": "總計",
+      "events": "事件數"
+    },
+    "breakdown": {
+      "title": "限流類型分佈",
+      "description": "不同限流類型的事件占比",
+      "total": "總計",
+      "count": "事件數",
+      "percentage": "佔比",
+      "noData": "無資料",
+      "types": {
+        "rpm": "RPM 限流",
+        "usd_5h": "5 小時消費",
+        "usd_weekly": "週消費",
+        "usd_monthly": "月消費",
+        "concurrent_sessions": "並發 Session",
+        "daily_quota": "每日額度"
+      }
+    },
+    "topUsers": {
+      "title": "受影響使用者排行",
+      "description": "觸發限流最多的使用者列表",
+      "total": "總計",
+      "rank": "名次",
+      "username": "使用者名稱",
+      "eventCount": "事件數",
+      "percentage": "佔比",
+      "loading": "載入中...",
+      "noData": "無資料"
+    }
+  },
+  "users": {
+    "title": "使用者管理",
+    "description": "顯示 {count} 位使用者",
+    "toolbar": {
+      "searchPlaceholder": "搜尋使用者名稱、備註、標籤、Key...",
+      "groupFilter": "依群組篩選",
+      "allGroups": "所有群組",
+      "tagFilter": "依標籤篩選",
+      "allTags": "所有標籤",
+      "keyGroupFilter": "金鑰分組",
+      "allKeyGroups": "所有金鑰分組",
+      "sortBy": "排序依據",
+      "sortOrder": "排序順序",
+      "sortByName": "按名稱",
+      "sortByTags": "按標籤",
+      "sortByExpiresAt": "按過期時間",
+      "sortByRpm": "依 RPM 上限",
+      "sortByLimit5h": "按5小時限額",
+      "sortByLimitDaily": "按每日限額",
+      "sortByLimitWeekly": "按週限額",
+      "sortByLimitMonthly": "按月限額",
+      "sortByCreatedAt": "按建立時間",
+      "ascending": "由小到大",
+      "descending": "由大到小",
+      "statusFilter": "狀態篩選",
+      "allStatus": "全部狀態",
+      "statusActive": "啟用",
+      "statusExpired": "已過期",
+      "statusExpiringSoon": "即將過期",
+      "statusEnabled": "已啟用",
+      "statusDisabled": "已停用",
+      "createUser": "建立使用者",
+      "createKey": "建立 Key"
+    },
+    "dialog": {
+      "userProviderGroup": "您的供應商分組",
+      "userProviderGroupHint": "新建立的 Key 只能使用您既有的分組"
+    }
+  },
+  "userManagement": {
+    "table": {
+      "columns": {
+        "username": "使用者名稱",
+        "note": "備註",
+        "expiresAt": "到期時間",
+        "expiresAtHint": "點擊快速續期",
+        "limitRpm": "RPM 限制",
+        "limit5h": "5h 限額（USD）",
+        "limitDaily": "每日限額（USD）",
+        "limitWeekly": "週限額（USD）",
+        "limitMonthly": "月限額（USD）",
+        "limitTotal": "總限額（USD）",
+        "limitSessions": "並發"
+      },
+      "keyRow": {
+        "name": "金鑰名稱",
+        "key": "金鑰",
+        "group": "分組",
+        "todayUsage": "今日請求",
+        "todayCost": "今日花費",
+        "todayTokens": "今日 Token",
+        "lastUsed": "最後使用",
+        "actions": "動作",
+        "quotaButton": "查看限額用量",
+        "fields": {
+          "callsLabel": "請求",
+          "tokensLabel": "Token",
+          "costLabel": "今日消耗"
+        }
+      },
+      "expand": "展開",
+      "collapse": "摺疊",
+      "refresh": "重新整理",
+      "noKeys": "無金鑰",
+      "defaultGroup": "default",
+      "userStatus": {
+        "disabled": "已停用"
+      },
+      "actions": {
+        "addKey": "新增金鑰"
+      }
+    },
+    "keyFullDisplay": {
+      "title": "完整金鑰",
+      "copySuccess": "金鑰已複製到剪貼簿",
+      "copyFailed": "複製失敗",
+      "show": "顯示金鑰",
+      "hide": "隱藏金鑰",
+      "copied": "已複製",
+      "copy": "複製金鑰"
+    },
+    "keyStatsDialog": {
+      "title": "今日模型統計",
+      "columns": {
+        "model": "Model",
+        "calls": "呼叫次數",
+        "tokens": "Token",
+        "cost": "消費金額"
+      },
+      "modal": {
+        "requests": "請求",
+        "totalTokens": "總Token",
+        "cost": "費用",
+        "inputTokens": "輸入Token",
+        "outputTokens": "輸出Token",
+        "cacheWrite": "快取寫入",
+        "cacheRead": "快取讀取",
+        "cacheHitRate": "快取命中率",
+        "cacheTokens": "快取Token",
+        "performanceHigh": "高",
+        "performanceMedium": "中",
+        "performanceLow": "低"
+      },
+      "noData": "今日暫無使用記錄",
+      "totalCalls": "今日總呼叫",
+      "totalCost": "今日總消費"
+    },
+    "keyQuotaUsageDialog": {
+      "title": "Key 限額使用情況",
+      "fetchFailed": "取得限額使用情況失敗",
+      "noLimit": "無限制",
+      "modeFixed": "固定時間",
+      "modeRolling": "滾動 24h",
+      "retry": "重試",
+      "labels": {
+        "limit5h": "5 小時",
+        "limitDaily": "每天",
+        "limitWeekly": "每週",
+        "limitMonthly": "每個月",
+        "limitTotal": "總計",
+        "limitSessions": "並發"
+      }
+    },
+    "quickRenew": {
+      "title": "快速續期",
+      "description": "為使用者 {userName} 設定新的過期時間",
+      "currentExpiry": "目前到期時間",
+      "neverExpires": "永不過期",
+      "expired": "已過期",
+      "quickExtensionLabel": "快速延期",
+      "quickExtensionHint": "從目前到期日延長（若已過期則從現在開始）",
+      "customDateLabel": "設定到期日",
+      "customDateHint": "直接指定到期日期",
+      "quickOptions": {
+        "7days": "7天",
+        "30days": "30天",
+        "90days": "90天",
+        "1year": "1年"
+      },
+      "customDate": "自訂日期",
+      "enableOnRenew": "同時啟用使用者",
+      "enableKeyOnRenew": "同時啟用金鑰",
+      "cancel": "取消續期",
+      "confirm": "確認續期",
+      "confirming": "續期中...",
+      "success": "續期成功",
+      "failed": "續期失敗"
+    },
+    "dialog": {
+      "createKeyTitle": "建立 Key",
+      "editKeyTitle": "編輯 Key"
+    },
+    "editDialog": {
+      "title": "編輯使用者",
+      "description": "編輯使用者資訊",
+      "userSection": "使用者設定",
+      "keysSection": "金鑰設定",
+      "scrollToKey": "捲動到金鑰",
+      "saveFailed": "儲存使用者失敗",
+      "keySaveFailed": "儲存金鑰失敗",
+      "keyDeleteFailed": "刪除金鑰失敗",
+      "saveSuccess": "儲存成功",
+      "atLeastOneKeyEnabled": "至少需要保留一個啟用的金鑰",
+      "operationFailed": "操作失敗",
+      "userDisabled": "使用者已停用",
+      "userEnabled": "使用者已啟用",
+      "deleteFailed": "刪除使用者失敗",
+      "userDeleted": "使用者已刪除",
+      "saving": "儲存中...",
+      "resetSection": {
+        "title": "重置選項"
+      },
+      "resetLimits": {
+        "title": "重設全部限額",
+        "description": "重設全部限額（5小時、每日、每週、每月、總計）的累計消費計數器。請求日誌和統計資料將被保留。",
+        "button": "重設全部限額",
+        "confirmTitle": "確認重設全部限額？",
+        "confirmDescription": "這將把所有累計消費計數器（5小時、每日、每週、每月、總計）歸零。請求日誌和使用統計將被保留。",
+        "confirm": "是的，重設全部限額",
+        "loading": "正在重設...",
+        "error": "重設全部限額失敗",
+        "success": "所有限額已重設",
+        "lastResetAt": "上次全部重設: {date}"
+      },
+      "reset5h": {
+        "button": "重設 5H 限額",
+        "confirm": "是的，重設 5H 限額",
+        "confirmDescriptionFixed": "這只會清空目前使用者聚合層的固定 5 小時視窗，不影響每日、每週、每月、總計，也不會影響該使用者底下的子 Key。",
+        "confirmDescriptionRolling": "這只會讓目前使用者聚合層的滾動 5 小時用量從現在起重新累計，不影響每日、每週、每月、總計，也不會影響該使用者底下的子 Key。",
+        "confirmTitle": "確認重設 5H 限額？",
+        "error": "重設 5H 限額失敗",
+        "loading": "正在重設...",
+        "successFixed": "該使用者目前固定 5H 視窗已重設",
+        "successRolling": "該使用者滾動 5H 限額已重設",
+        "unavailableReason": "僅在該使用者已設定使用者層級 5H 限額時可用。"
+      },
+      "resetData": {
+        "title": "重置統計",
+        "description": "刪除該使用者的所有請求日誌和使用資料。此操作不可逆。",
+        "error": "重置資料失敗",
+        "button": "重置統計",
+        "confirmTitle": "重置所有統計？",
+        "confirmDescription": "這將永久刪除該使用者的所有請求日誌和使用統計。此操作無法撤銷。",
+        "confirm": "是的，重設全部",
+        "loading": "重設中...",
+        "success": "所有統計已重置"
+      }
+    },
+    "batchEdit": {
+      "enterMode": "批量編輯",
+      "exitMode": "離開",
+      "selectAll": "全選",
+      "selectedCount": "已選 {users} 位使用者，{keys} 個金鑰",
+      "editSelected": "編輯選取項目",
+      "dialog": {
+        "title": "批量編輯",
+        "description": "將影響 {users} 位使用者，{keys} 個金鑰",
+        "cancel": "取消變更",
+        "next": "繼續",
+        "noFieldEnabled": "請先啟用至少一個要覆蓋的欄位",
+        "noUpdate": "沒有可執行的更新",
+        "noSelection": "請先選擇要批量編輯的使用者或金鑰。"
+      },
+      "confirm": {
+        "title": "確認批量更新",
+        "description": "此操作將更新 {users} 位使用者和 {keys} 個金鑰，操作不可撤銷。",
+        "userFields": "使用者欄位",
+        "keyFields": "金鑰欄位",
+        "goBack": "返回編輯",
+        "update": "確認更新",
+        "updating": "正在更新..."
+      },
+      "toast": {
+        "usersUpdated": "已更新 {count} 位使用者",
+        "keysUpdated": "已更新 {count} 個金鑰",
+        "usersFailed": "使用者更新失敗：{error}",
+        "keysFailed": "金鑰更新失敗：{error}",
+        "batchFailed": "批量更新失敗"
+      },
+      "validation": {
+        "invalidNumber": "請輸入有效數字",
+        "negativeNumber": "數值不能為負數"
+      },
+      "aria": {
+        "selectUser": "選擇使用者",
+        "selectKey": "選擇金鑰"
+      },
+      "user": {
+        "title": "使用者設定",
+        "affected": "將影響 {count} 位使用者",
+        "enableFieldAria": "啟用欄位：{title}",
+        "fields": {
+          "note": "備註",
+          "tags": "標籤",
+          "rpm": "RPM 上限",
+          "limit5h": "5h 限額（USD）",
+          "limitDaily": "每日限額（USD）",
+          "limitWeekly": "週限額（USD）",
+          "limitMonthly": "月限額（USD）"
+        },
+        "placeholders": {
+          "emptyToClear": "留空表示清除",
+          "tagsPlaceholder": "輸入後按 Enter 新增，支援逗號分隔",
+          "emptyNoLimit": "留空表示不限額"
+        }
+      },
+      "key": {
+        "title": "金鑰設定",
+        "affected": "將影響 {count} 個金鑰",
+        "fields": {
+          "providerGroup": "分組（providerGroup）",
+          "limit5h": "5h 限額（USD）",
+          "limitDaily": "每日限額（USD）",
+          "limitWeekly": "週限額（USD）",
+          "limitMonthly": "月限額（USD）",
+          "canLoginWebUi": "獨立個人用量頁面",
+          "keyEnabled": "Key 啟用狀態"
+        },
+        "placeholders": {
+          "groupPlaceholder": "留空表示清空分組，多個以逗號分隔",
+          "emptyNoLimit": "留空表示不限額"
+        },
+        "targetValue": "目標值"
+      }
+    },
+    "createDialog": {
+      "title": "建立使用者",
+      "description": "建立新使用者並設定 API 金鑰",
+      "saveFailed": "建立使用者失敗",
+      "keyCreateFailed": "建立金鑰失敗",
+      "rollbackFailed": "自動回滾失敗：可能已建立使用者但未建立金鑰。請手動刪除該使用者（userId: {userId}）後重試",
+      "createSuccess": "使用者建立成功",
+      "successTitle": "建立成功",
+      "successDescription": "使用者和金鑰已成功建立",
+      "generatedKey": "產生的金鑰",
+      "keyHint": "您可以在使用者管理頁面管理此金鑰（啟用/停用、設定限額等），但完整金鑰僅顯示一次，請立即複製並妥善保存",
+      "keysSection": "金鑰",
+      "addKey": "新增金鑰",
+      "removeKey": "刪除金鑰",
+      "cannotDeleteLastKey": "無法刪除最後一個金鑰",
+      "confirmRemoveKeyTitle": "刪除金鑰",
+      "confirmRemoveKeyDescription": "確定要刪除金鑰 \"{name}\" 嗎?",
+      "creating": "建立中...",
+      "create": "建立"
+    },
+    "limitRules": {
+      "addRule": "新增限額規則",
+      "ruleTypes": {
+        "limitRpm": "RPM 限額",
+        "limit5h": "5小時限額",
+        "limitDaily": "每日限額",
+        "limitWeekly": "週限額",
+        "limitMonthly": "月限額",
+        "limitTotal": "總限額",
+        "limitSessions": "並發 Session"
+      },
+      "dailyMode": {
+        "fixed": "固定時間重設",
+        "rolling": "滾動視窗（24h）"
+      },
+      "quickValues": {
+        "10": "$10",
+        "50": "$50",
+        "100": "$100",
+        "500": "$500",
+        "unlimited": "無限"
+      },
+      "alreadySet": "已設定",
+      "confirmAdd": "新增",
+      "cancel": "取消設定"
+    },
+    "quickExpire": {
+      "oneWeek": "一週後",
+      "oneMonth": "一個月後",
+      "threeMonths": "三個月後",
+      "oneYear": "一年後"
+    },
+    "providerGroupSelect": {
+      "providersSuffix": "個供應商",
+      "loadFailed": "載入供應商分組失敗"
+    },
+    "providerGroup": {
+      "label": "供應商分組",
+      "placeholder": "選擇供應商分組",
+      "noRestriction": "無限制（所有供應商）",
+      "providerCount": "{count} 個供應商"
+    },
+    "dangerZone": {
+      "title": "危險操作",
+      "description": "以下操作不可逆，請謹慎執行",
+      "enable": {
+        "title": "啟用使用者",
+        "description": "啟用後該使用者及其金鑰將恢復正常使用",
+        "trigger": "啟用",
+        "confirm": "確認啟用",
+        "confirmDescription": "確認要啟用使用者「{userName}」嗎？",
+        "loading": "處理中..."
+      },
+      "disable": {
+        "title": "停用使用者",
+        "description": "停用後該使用者及其金鑰將無法繼續使用",
+        "trigger": "停用",
+        "confirm": "確認停用",
+        "confirmDescription": "確認要停用使用者「{userName}」嗎？",
+        "loading": "處理中..."
+      },
+      "delete": {
+        "title": "刪除使用者",
+        "description": "將刪除該使用者的所有關聯資料，此操作無法撤銷",
+        "trigger": "刪除",
+        "confirm": "確認刪除",
+        "confirmDescription": "此操作將刪除使用者「{userName}」的所有關聯資料，且無法撤銷。",
+        "confirmLabel": "二次確認",
+        "confirmHint": "請輸入「{userName}」以確認刪除",
+        "loading": "刪除中..."
+      },
+      "actions": {
+        "cancel": "取消操作"
+      },
+      "errors": {
+        "enableFailed": "啟用使用者失敗，請稍後重試",
+        "disableFailed": "停用使用者失敗，請稍後重試",
+        "deleteFailed": "刪除使用者失敗，請稍後重試"
+      }
+    },
+    "limitIndicator": {
+      "notSet": "未設定",
+      "unlimited": "無限制"
+    },
+    "keySettings": {
+      "balanceQueryPage": {
+        "label": "啟用獨立餘額查詢頁",
+        "description": "允許使用者透過專屬頁面查看餘額"
+      },
+      "cacheTtlOverride": {
+        "label": "Cache TTL 覆寫",
+        "inherit": "不覆寫（跟隨供應商/客戶端）",
+        "5m": "5 分鐘",
+        "1h": "1 小時"
+      }
+    },
+    "pagination": {
+      "previous": "上一頁",
+      "next": "下一頁",
+      "page": "第 {current} 頁",
+      "of": "共 {total} 頁"
+    },
+    "toolbar": {
+      "expandAll": "全部展開",
+      "collapseAll": "全部收起"
+    },
+    "keyStatus": {
+      "enabled": "啟用",
+      "disabled": "停用",
+      "active": "啟用中",
+      "expired": "已過期",
+      "expiringSoon": "即將過期",
+      "keyEnabled": "密鑰已啟用",
+      "keyDisabled": "密鑰已停用",
+      "toggleKeyStatus": "切換密鑰狀態",
+      "clickToDisableKey": "點擊停用密鑰",
+      "clickToEnableKey": "點擊啟用密鑰",
+      "operationFailed": "操作失敗",
+      "clickToQuickRenew": "點擊快速續期"
+    },
+    "userStatus": {
+      "enabled": "啟用",
+      "disabled": "停用",
+      "active": "啟用中",
+      "expired": "已過期",
+      "expiringSoon": "即將過期",
+      "userEnabled": "使用者已啟用",
+      "userDisabled": "使用者已停用",
+      "toggleUserStatus": "切換使用者狀態",
+      "clickToDisableUser": "點擊停用使用者",
+      "clickToEnableUser": "點擊啟用使用者",
+      "operationFailed": "操作失敗",
+      "deleteFailed": "刪除失敗",
+      "deleteSuccess": "刪除成功",
+      "daysLeft": "{days, plural, =0 {今天到期} =1 {剩餘1天} other {剩餘#天}}"
+    },
+    "userEditSection": {
+      "sections": {
+        "basicInfo": "基本資訊",
+        "expireTime": "過期時間",
+        "limitRules": "限額規則",
+        "accessRestrictions": "存取限制"
+      },
+      "fields": {
+        "username": {
+          "label": "使用者名稱",
+          "placeholder": "請輸入使用者名稱"
+        },
+        "description": {
+          "label": "備註",
+          "placeholder": "請輸入備註（選填）"
+        },
+        "tags": {
+          "label": "使用者標籤",
+          "placeholder": "輸入標籤（按 Enter 新增）"
+        },
+        "providerGroup": {
+          "label": "供應商分組",
+          "placeholder": "default"
+        },
+        "allowedClients": {
+          "label": "用戶端限制",
+          "description": "限制哪些 CLI/IDE 用戶端可以使用此帳戶。留空表示無限制。",
+          "customLabel": "自訂用戶端模式",
+          "customPlaceholder": "輸入模式（如 'my-ide'、'codex-*'）",
+          "customHelp": "不含 '*'：不區分大小寫的子串比對（忽略 '-' 和 '_'）。含 '*'：從 UA 開頭的 glob 萬用字元比對（用 *foo* 比對任意位置；不區分大小寫，字元按原樣比對）。"
+        },
+        "blockedClients": {
+          "label": "黑名單客戶端",
+          "description": "符合這些模式的客戶端將被拒絕，即使它們也符合白名單。",
+          "customLabel": "自訂黑名單模式",
+          "customPlaceholder": "輸入模式（如 'my-ide'、'codex-*'）",
+          "customHelp": "不含 '*'：不區分大小寫的子串比對（忽略 '-' 和 '_'）。含 '*'：從 UA 開頭的 glob 萬用字元比對（用 *foo* 比對任意位置；不區分大小寫，字元按原樣比對）。"
+        },
+        "allowedModels": {
+          "label": "Model 限制",
+          "placeholder": "輸入模型名稱或從下拉選單選擇",
+          "description": "限制使用者只能使用指定的 AI 模型。留空表示無限制。"
+        },
+        "enableStatus": {
+          "label": "啟用狀態",
+          "enabledDescription": "目前已啟用，停用後該使用者及其金鑰將無法繼續使用",
+          "disabledDescription": "目前已停用，啟用後該使用者及其金鑰將恢復正常使用",
+          "confirmDisable": "確認停用",
+          "confirmEnable": "確認啟用",
+          "confirmEnableTitle": "確認啟用使用者",
+          "confirmDisableTitle": "確認停用使用者",
+          "confirmEnableDescription": "啟用後該使用者及其金鑰將恢復正常使用",
+          "confirmDisableDescription": "停用後該使用者及其金鑰將無法繼續使用",
+          "cancel": "取消變更",
+          "processing": "處理中..."
+        }
+      },
+      "actions": {
+        "allow": "允許",
+        "block": "封鎖"
+      },
+      "presetClients": {
+        "claude-cli": "Claude Code CLI",
+        "gemini-cli": "Gemini CLI",
+        "factory-cli": "Droid CLI",
+        "codex-cli": "Codex CLI",
+        "claude-code": "Claude Code（全部）",
+        "claude-code-cli": "Claude Code CLI （精確檢測）",
+        "claude-code-cli-sdk": "Claude Code CLI SDK",
+        "claude-code-vscode": "Claude Code VSCode",
+        "claude-code-sdk-ts": "Claude Code SDK（TypeScript）",
+        "claude-code-sdk-py": "Claude Code SDK（Python）",
+        "claude-code-gh-action": "Claude Code GitHub Action"
+      },
+      "subClients": {
+        "all": "全部",
+        "cli": "CLI",
+        "vscode": "VS Code",
+        "sdk-ts": "SDK（TypeScript）",
+        "sdk-py": "SDK（Python）",
+        "cli-sdk": "CLI SDK",
+        "gh-action": "GitHub Action",
+        "codex-cli-core": "CLI / TUI",
+        "desktop": "Desktop",
+        "exec": "Exec"
+      },
+      "nSelected": "已選 {count} 項"
+    },
+    "keyEditSection": {
+      "sections": {
+        "basicInfo": "基本資訊",
+        "expireTime": "過期時間",
+        "limitRules": "限額規則",
+        "specialFeatures": "進階功能"
+      },
+      "fields": {
+        "keyName": {
+          "label": "金鑰名稱",
+          "placeholder": "請輸入金鑰名稱"
+        },
+        "enableStatus": {
+          "label": "啟用狀態",
+          "description": "停用後此金鑰將無法使用。停用後僅管理員可啟用。",
+          "cannotDisableTooltip": "無法停用最後一個啟用的金鑰"
+        },
+        "balanceQueryPage": {
+          "label": "獨立個人用量頁面",
+          "description": "啟用後，此金鑰可使用獨立的個人用量查詢頁面",
+          "descriptionEnabled": "啟用後，此金鑰在登入時將進入獨立的個人用量頁面。但不可修改自己金鑰的供應商分組。",
+          "descriptionDisabled": "關閉後，使用者將無法進入個人獨立用量頁面 UI，而是進入受限的 Web UI。"
+        },
+        "providerGroup": {
+          "label": "供應商分組",
+          "placeholder": "預設：default",
+          "selectHint": "選擇此 Key 可使用的供應商分組",
+          "editHint": "已有密鑰的分組不可修改",
+          "allGroups": "使用全部群組",
+          "noGroupHint": "default 分組包含所有未設定 groupTag 的供應商"
+        },
+        "cacheTtl": {
+          "label": "Cache TTL 覆寫",
+          "description": "強制為包含 cache_control 的請求設定 Anthropic prompt cache TTL。",
+          "options": {
+            "inherit": "不覆寫（跟隨供應商/客戶端）",
+            "5m": "5m",
+            "1h": "1h"
+          }
+        }
+      },
+      "limitRules": {
+        "title": "新增限額規則",
+        "actions": {
+          "add": "新增規則",
+          "remove": "移除項目"
+        },
+        "daily": {
+          "mode": {
+            "fixed": "固定時間重置",
+            "rolling": "滾動視窗（24小時）"
+          }
+        },
+        "overwriteHint": "此類型已存在，儲存將覆蓋原有值"
+      }
+    }
+  },
+  "webhookMigration": {
+    "title": "Webhook 系統升級",
+    "description": "我們推出了全新的 Webhook 通知系統，支援多目標推送、獨立設定和更好的可靠性。",
+    "step1": {
+      "title": "偵測到舊版 Webhook 設定",
+      "description": "系統偵測到您正在使用舊版 Webhook 設定。新版系統支援更強大的功能，建議您進行遷移。"
+    },
+    "step2": {
+      "title": "選擇平台類型",
+      "description": "以下 Webhook 地址無法自動識別平台類型，請手動選擇："
+    },
+    "platformOptions": {
+      "wechat": "企業微信",
+      "feishu": "飛書",
+      "dingtalk": "釘釘",
+      "telegram": "Telegram",
+      "custom": "自訂"
+    },
+    "migrateButton": "開始遷移",
+    "skipButton": "稍後再說",
+    "nextButton": "繼續",
+    "goToSettingsButton": "前往設定",
+    "migrating": "正在遷移...",
+    "success": "遷移完成",
+    "successDescription": "您的 Webhook 設定已成功遷移到新系統。",
+    "error": "遷移失敗",
+    "errorGeneric": "遷移失敗，請稍後重試。",
+    "detectedWebhooks": "偵測到的 Webhook",
+    "notificationTypes": {
+      "circuit_breaker": "熔斷器告警",
+      "daily_leaderboard": "每日排行",
+      "cost_alert": "成本預警"
+    },
+    "urlLabel": "Webhook URL",
+    "platformLabel": "平台類型",
+    "autoDetected": "自動識別",
+    "selectPlatform": "請選擇平台",
+    "successStats": "已建立 {targets} 個目標，{bindings} 個綁定"
+  },
+  "limitRules": {
+    "addRule": "新增限額規則",
+    "title": "新增限額規則",
+    "description": "選擇限額類型並設定數值",
+    "cancel": "取消",
+    "confirm": "儲存",
+    "fields": {
+      "type": {
+        "label": "限額類型",
+        "placeholder": "請選擇"
+      },
+      "value": {
+        "label": "數值",
+        "placeholder": "請輸入"
+      }
+    },
+    "limit5h": {
+      "mode": {
+        "label": "5 小時重設模式",
+        "fixed": "固定視窗",
+        "rolling": "滾動視窗（5 小時）",
+        "helperFixed": "從首次成功記帳開始鎖定 5 小時固定視窗。",
+        "helperRolling": "依最近 5 小時滾動視窗統計額度。"
+      }
+    },
+    "daily": {
+      "mode": {
+        "label": "每日重設模式",
+        "fixed": "固定時間重置",
+        "rolling": "滾動視窗（24 小時）",
+        "helperFixed": "每天在指定時間重置額度。",
+        "helperRolling": "從首次請求開始計算 24 小時滾動視窗"
+      },
+      "time": {
+        "label": "重設時間",
+        "placeholder": "HH:mm"
+      }
+    },
+    "limitTypes": {
+      "limitRpm": "RPM 限額",
+      "limit5h": "5 小時限額",
+      "limitDaily": "每日限額",
+      "limitWeekly": "週限額",
+      "limitMonthly": "月限額",
+      "limitTotal": "總限額",
+      "limitSessions": "並發 Session"
+    },
+    "ruleTypes": {
+      "limitRpm": "RPM 限額",
+      "limit5h": "5 小時限額",
+      "limitDaily": "每日限額",
+      "limitWeekly": "週限額",
+      "limitMonthly": "月限額",
+      "limitTotal": "總限額",
+      "limitSessions": "並發 Session"
+    },
+    "errors": {
+      "missingType": "請選擇限額類型",
+      "invalidValue": "請輸入有效數值",
+      "invalidTime": "請輸入有效時間（HH:mm）"
+    },
+    "overwriteHint": "此類型已存在，儲存後會覆蓋現有設定",
+    "quickValues": {
+      "10": "$10",
+      "50": "$50",
+      "100": "$100",
+      "500": "$500",
+      "unlimited": "無限"
+    },
+    "alreadySet": "已設定",
+    "confirmAdd": "新增"
+  }
+}

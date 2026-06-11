@@ -1,0 +1,1211 @@
+import type { Context } from "hono";
+import { logger } from "@/lib/logger";
+import { writeLiveChain } from "@/lib/redis/live-chain-store";
+import { clientRequestsContext1m as clientRequestsContext1mHelper } from "@/lib/special-attributes";
+import {
+  type ResolvedPricing,
+  resolvePricingForModelRecords,
+} from "@/lib/utils/pricing-resolution";
+import { findLatestPriceByModel } from "@/repository/model-price";
+import { findAllProviders } from "@/repository/provider";
+import type { CacheTtlResolved } from "@/types/cache";
+import type { Key } from "@/types/key";
+import type { ProviderChainItem } from "@/types/message";
+import type { ModelPriceData } from "@/types/model-price";
+import type { Provider, ProviderType } from "@/types/provider";
+import type { SpecialSetting } from "@/types/special-settings";
+import type { BillingModelSource, CodexPriorityBillingSource } from "@/types/system-config";
+import type { User } from "@/types/user";
+import { isCountTokensEndpointPath } from "./endpoint-paths";
+import { type EndpointPolicy, resolveEndpointPolicy } from "./endpoint-policy";
+import { ProxyError } from "./errors";
+import type { ClientFormat } from "./format-mapper";
+import {
+  buildOpenAIImageLogicalBody,
+  getOpenAIImageEndpoint,
+  getOpenAIImageMultipartSummary,
+  isOpenAIImageMultipartContentType,
+  isOpenAIImageMultipartRequest,
+  type OpenAIImageRequestMetadata,
+  parseOpenAIImageMultipartMetadata,
+} from "./openai-image-compat";
+
+export interface AuthState {
+  user: User | null;
+  key: Key | null;
+  apiKey: string | null;
+  success: boolean;
+  errorResponse?: Response; // 认证失败时的详细错误响应
+}
+
+export interface MessageContext {
+  id: number;
+  createdAt: Date;
+  user: User;
+  key: Key;
+  apiKey: string;
+}
+
+export interface ProxyRequestPayload {
+  message: Record<string, unknown>;
+  buffer?: ArrayBuffer;
+  log: string;
+  note?: string;
+  model: string | null;
+  imageRequestMetadata?: OpenAIImageRequestMetadata | null;
+}
+
+interface RequestBodyResult {
+  requestMessage: Record<string, unknown>;
+  requestBodyLog: string;
+  requestBodyLogNote?: string;
+  requestBodyBuffer?: ArrayBuffer;
+  contentLength?: number | null;
+  actualBodyBytes?: number;
+  imageRequestMetadata?: OpenAIImageRequestMetadata | null;
+}
+
+export class ProxySession {
+  readonly startTime: number;
+  readonly method: string;
+  requestUrl: URL; // 非 readonly，允许模型重定向修改 Gemini URL 路径
+  readonly headers: Headers;
+  // 原始 headers 的副本，用于检测过滤器修改
+  private readonly originalHeaders: Headers;
+  readonly headerLog: string;
+  readonly request: ProxyRequestPayload;
+  readonly userAgent: string | null; // User-Agent（用于客户端类型分析）
+  readonly context: Context; // Hono Context（用于转换器）
+  readonly clientAbortSignal: AbortSignal | null; // 客户端中断信号
+  userName: string;
+  authState: AuthState | null;
+  provider: Provider | null;
+  messageContext: MessageContext | null;
+
+  // Time To First Byte (ms). Streaming: first chunk. Non-stream: equals durationMs.
+  ttfbMs: number | null = null;
+
+  // Timestamp when guard pipeline finished and forwarding started (epoch ms).
+  forwardStartTime: number | null = null;
+
+  // Actual serialized request body sent to upstream (after all preprocessing).
+  forwardedRequestBody: string | null = null;
+
+  // Session ID（用于会话粘性和并发限流）
+  sessionId: string | null;
+
+  // 客户端 IP（由 ProxyAuthenticator 按系统设置的 ip_extraction_config 解析后写入）
+  clientIp: string | null = null;
+
+  // Request Sequence（Session 内请求序号）
+  requestSequence: number = 1;
+
+  // 请求格式追踪：记录原始请求格式和供应商类型
+  originalFormat: ClientFormat = "claude";
+  providerType: ProviderType | null = null;
+
+  private readonly endpointPolicy: EndpointPolicy;
+
+  // 模型重定向追踪：保存原始模型名（重定向前）
+  private originalModelName: string | null = null;
+
+  // 原始 URL 路径（用于 Gemini 模型重定向重置）
+  private originalUrlPathname: string | null = null;
+
+  // 当前供应商 attempt 的模型重定向快照。
+  // 用于在 hedge shadow session 中延迟把 redirect 归属到真正的 winner/failed 链路项。
+  private currentModelRedirect: {
+    providerId: number;
+    redirect: NonNullable<ProviderChainItem["modelRedirect"]>;
+  } | null = null;
+
+  // 上游决策链（记录尝试的供应商列表）
+  private providerChain: ProviderChainItem[];
+
+  // 上次选择的决策上下文（用于记录到 providerChain）
+  private _lastSelectionContext?: ProviderChainItem["decisionContext"];
+
+  // Cache TTL override (resolved)
+  private cacheTtlResolved: CacheTtlResolved | null = null;
+
+  // 1M Context Window applied (resolved)
+  private context1mApplied: boolean = false;
+
+  // Group-level cost multiplier (applied on top of provider costMultiplier)
+  private groupCostMultiplier: number = 1;
+
+  // 特殊设置（用于审计/展示，可扩展）
+  private specialSettings: SpecialSetting[] = [];
+
+  // Cached price data (lazy loaded: undefined=not loaded, null=no data)
+  private cachedPriceData?: ModelPriceData | null;
+
+  // Cached billing model source config (per-request)
+  private cachedBillingModelSource?: BillingModelSource;
+
+  // Cached Codex Priority 计费来源（per-request）
+  private cachedCodexPriorityBillingSource?: CodexPriorityBillingSource;
+
+  // 高并发模式（per-request）
+  // 开启后：跳过部分 Redis 调试快照与实时观测写入，降低高并发下的热点开销
+  private highConcurrencyModeEnabled = false;
+
+  // raw non-chat endpoint 跨 provider fallback 的运行时开关（per-request）
+  // endpoint policy 表示能力，系统设置决定本次请求是否实际启用。
+  private rawCrossProviderFallbackEnabled: boolean | null = null;
+
+  /**
+   * Promise cache for billing-related system settings load (concurrency safe).
+   * Ensures the relevant system settings are loaded at most once per request/session.
+   */
+  private billingSettingsPromise?: Promise<{
+    billingModelSource: BillingModelSource;
+    codexPriorityBillingSource: CodexPriorityBillingSource;
+    source: "live" | "cache" | "default";
+  }>;
+  private billingSettingsSource?: "live" | "cache" | "default";
+
+  // Resolved pricing cache (per request/provider combination)
+  private resolvedPricingCache = new Map<string, ResolvedPricing | null>();
+
+  /**
+   * 请求级 Provider 快照
+   *
+   * 在 Session 首次获取时冻结，整个请求生命周期保持不变。
+   * 用于保证故障迁移期间数据一致性（避免同一请求多次调用返回不同结果）。
+   */
+  private providersSnapshot: Provider[] | null = null;
+
+  // 本请求已通过 Provider 并发检查获得的引用。
+  // 失败切换 provider 时只能释放这里记录过的引用，避免 hedge/fallback 释放未 acquire 的 Redis 计数。
+  private providerSessionRefs = new Set<number>();
+
+  private constructor(init: {
+    startTime: number;
+    method: string;
+    requestUrl: URL;
+    headers: Headers;
+    headerLog: string;
+    request: ProxyRequestPayload;
+    userAgent: string | null;
+    context: Context;
+    clientAbortSignal: AbortSignal | null;
+  }) {
+    this.startTime = init.startTime;
+    this.method = init.method;
+    this.requestUrl = init.requestUrl;
+    this.headers = init.headers;
+    this.originalHeaders = new Headers(init.headers); // 原始 headers 的副本，用于检测过滤器修改
+    this.headerLog = init.headerLog;
+    this.request = init.request;
+    this.userAgent = init.userAgent;
+    this.context = init.context;
+    this.clientAbortSignal = init.clientAbortSignal;
+    this.userName = "unknown";
+    this.authState = null;
+    this.provider = null;
+    this.messageContext = null;
+    this.sessionId = null;
+    this.providerChain = [];
+    this.endpointPolicy = resolveSessionEndpointPolicy(init.requestUrl);
+  }
+
+  static async fromContext(c: Context): Promise<ProxySession> {
+    const startTime = Date.now();
+    const method = c.req.method.toUpperCase();
+    const requestUrl = new URL(c.req.url);
+    const headers = new Headers(c.req.header());
+    const headerLog = formatHeadersForLog(headers);
+    const bodyResult = await parseRequestBody(c);
+
+    // 提取 User-Agent
+    const userAgent = headers.get("user-agent") || null;
+
+    // 提取客户端 AbortSignal（如果存在）
+    const clientAbortSignal = c.req.raw.signal || null;
+
+    const modelFromBody =
+      typeof bodyResult.requestMessage.model === "string" ? bodyResult.requestMessage.model : null;
+    const modelFromImageRequest = bodyResult.imageRequestMetadata?.model ?? null;
+
+    // 针对官方 Gemini 路径（/v1beta/models/{model}:generateContent）
+    // 请求体中通常没有 model 字段，需从 URL 路径提取用于调度器匹配
+    const modelFromPath = extractModelFromPath(requestUrl.pathname);
+
+    // 双重检测（请求体优先，其次路径），若判断为 Gemini 请求则给出默认模型
+    const isLikelyGeminiRequest =
+      Array.isArray((bodyResult.requestMessage as Record<string, unknown>).contents) ||
+      typeof (bodyResult.requestMessage as Record<string, unknown>).request === "object" ||
+      modelFromPath !== null;
+
+    const resolvedModel =
+      modelFromBody ??
+      modelFromImageRequest ??
+      modelFromPath ??
+      (isLikelyGeminiRequest ? "gemini-2.5-flash" : null);
+
+    const isLargeRequestBody =
+      (bodyResult.contentLength !== null &&
+        bodyResult.contentLength !== undefined &&
+        bodyResult.contentLength >= LARGE_REQUEST_BODY_BYTES) ||
+      (bodyResult.actualBodyBytes !== undefined &&
+        bodyResult.actualBodyBytes >= LARGE_REQUEST_BODY_BYTES);
+
+    if (!resolvedModel && isLargeRequestBody) {
+      logger.warn("[ProxySession] Missing model for large request body", {
+        pathname: requestUrl.pathname,
+        contentLength: bodyResult.contentLength ?? undefined,
+        actualBodyBytes: bodyResult.actualBodyBytes ?? undefined,
+      });
+
+      throw new ProxyError(
+        "Missing required field 'model'. If you provided it, your large request body may have been truncated by the proxy body size limit. Please reduce context size or contact the administrator to increase the limit.",
+        400
+      );
+    }
+
+    const request: ProxyRequestPayload = {
+      message: bodyResult.requestMessage,
+      buffer: bodyResult.requestBodyBuffer,
+      log: bodyResult.requestBodyLog,
+      note: bodyResult.requestBodyLogNote,
+      model: resolvedModel,
+      imageRequestMetadata: bodyResult.imageRequestMetadata,
+    };
+
+    return new ProxySession({
+      startTime,
+      method,
+      requestUrl,
+      headers,
+      headerLog,
+      request,
+      userAgent,
+      context: c,
+      clientAbortSignal,
+    });
+  }
+
+  /**
+   * 检查 header 是否被过滤器修改过。
+   *
+   * 通过对比原始值和当前值判断。以下情况均视为"已修改"：
+   * - 值被修改
+   * - header 被删除
+   * - header 从不存在变为存在
+   *
+   * @param key - header 名称（不区分大小写）
+   * @returns true 表示 header 被修改过，false 表示未修改
+   */
+  isHeaderModified(key: string): boolean {
+    const original = this.originalHeaders.get(key);
+    const current = this.headers.get(key);
+    return original !== current;
+  }
+
+  setAuthState(state: AuthState): void {
+    this.authState = state;
+    if (state.user) {
+      this.userName = state.user.name;
+    }
+  }
+
+  setProvider(provider: Provider | null): void {
+    this.provider = provider;
+    if (provider) {
+      this.providerType = provider.providerType as ProviderType;
+    }
+  }
+
+  recordProviderSessionRef(providerId: number): void {
+    if (!this.providerSessionRefs) {
+      this.providerSessionRefs = new Set<number>();
+    }
+
+    if (Number.isInteger(providerId) && providerId > 0) {
+      this.providerSessionRefs.add(providerId);
+    }
+  }
+
+  consumeProviderSessionRef(providerId: number): boolean {
+    if (!this.providerSessionRefs?.has(providerId)) {
+      return false;
+    }
+
+    this.providerSessionRefs.delete(providerId);
+    return true;
+  }
+
+  setCacheTtlResolved(ttl: CacheTtlResolved | null): void {
+    this.cacheTtlResolved = ttl;
+  }
+
+  getCacheTtlResolved(): CacheTtlResolved | null {
+    return this.cacheTtlResolved;
+  }
+
+  setContext1mApplied(applied: boolean): void {
+    this.context1mApplied = applied;
+  }
+
+  getContext1mApplied(): boolean {
+    return this.context1mApplied;
+  }
+
+  setGroupCostMultiplier(value: number): void {
+    // Guard against NaN, Infinity, negative values polluting cost calculations.
+    if (!Number.isFinite(value) || value < 0) {
+      this.groupCostMultiplier = 1;
+      return;
+    }
+    this.groupCostMultiplier = value;
+  }
+
+  getGroupCostMultiplier(): number {
+    return this.groupCostMultiplier;
+  }
+
+  setHighConcurrencyModeEnabled(enabled: boolean): void {
+    this.highConcurrencyModeEnabled = enabled;
+  }
+
+  isHighConcurrencyModeEnabled(): boolean {
+    return this.highConcurrencyModeEnabled;
+  }
+
+  setRawCrossProviderFallbackEnabled(enabled: boolean): void {
+    this.rawCrossProviderFallbackEnabled = enabled;
+  }
+
+  isRawCrossProviderFallbackEnabled(): boolean {
+    const endpointPolicy =
+      this.endpointPolicy ??
+      resolveEndpointPolicy((this.requestUrl as URL | undefined)?.pathname ?? "/");
+    return (
+      endpointPolicy.allowRawCrossProviderFallback &&
+      (this.rawCrossProviderFallbackEnabled ?? false)
+    );
+  }
+
+  shouldPersistSessionDebugArtifacts(): boolean {
+    return !this.highConcurrencyModeEnabled;
+  }
+
+  shouldTrackSessionObservability(): boolean {
+    return !this.highConcurrencyModeEnabled;
+  }
+
+  addSpecialSetting(setting: SpecialSetting): void {
+    this.specialSettings.push(setting);
+  }
+
+  getSpecialSettings(): SpecialSetting[] | null {
+    return this.specialSettings.length > 0 ? this.specialSettings : null;
+  }
+
+  /**
+   * Check if client requests 1M context (based on anthropic-beta header)
+   */
+  clientRequestsContext1m(): boolean {
+    return clientRequestsContext1mHelper(this.headers);
+  }
+
+  /**
+   * 设置原始请求格式（从路由层调用）
+   */
+  setOriginalFormat(format: ClientFormat): void {
+    this.originalFormat = format;
+  }
+
+  setMessageContext(context: MessageContext | null): void {
+    this.messageContext = context;
+    if (context?.user) {
+      this.userName = context.user.name;
+    }
+  }
+
+  /**
+   * Record Time To First Byte (TTFB) for streaming responses.
+   *
+   * Definition: first body chunk received.
+   * Non-stream responses should persist TTFB as `durationMs` at finalize time.
+   */
+  recordTtfb(): number {
+    if (this.ttfbMs !== null) {
+      return this.ttfbMs;
+    }
+
+    const value = Math.max(0, Date.now() - this.startTime);
+    this.ttfbMs = value;
+    this.persistLiveChain();
+    return value;
+  }
+
+  /**
+   * Record the timestamp when guard pipeline finished and upstream forwarding begins.
+   * Called once; subsequent calls are no-ops.
+   */
+  recordForwardStart(): void {
+    if (this.forwardStartTime === null) {
+      this.forwardStartTime = Date.now();
+    }
+  }
+
+  /**
+   * 设置 session ID
+   */
+  setSessionId(sessionId: string): void {
+    this.sessionId = sessionId;
+  }
+
+  /**
+   * 设置请求序号（Session 内）
+   */
+  setRequestSequence(sequence: number): void {
+    this.requestSequence = sequence;
+  }
+
+  /**
+   * 获取请求序号（Session 内）
+   */
+  getRequestSequence(): number {
+    return this.requestSequence;
+  }
+
+  /**
+   * 获取 Provider 列表快照
+   *
+   * 首次调用时从进程缓存获取并冻结，后续调用返回相同数据。
+   * 用于保证故障迁移期间数据一致性（避免同一请求多次调用返回不同结果）。
+   *
+   * @returns Provider 列表（整个请求生命周期不变）
+   */
+  async getProvidersSnapshot(): Promise<Provider[]> {
+    if (this.providersSnapshot !== null) {
+      return this.providersSnapshot;
+    }
+
+    this.providersSnapshot = await findAllProviders();
+    return this.providersSnapshot;
+  }
+
+  /**
+   * 获取 messages 数组长度（支持 Claude、Codex 和 Gemini 格式）
+   */
+  getMessagesLength(): number {
+    const msg = this.request.message as Record<string, unknown>;
+    // Claude 格式: messages[]
+    if (Array.isArray(msg.messages)) {
+      return msg.messages.length;
+    }
+    // Codex 格式: input[]
+    if (Array.isArray(msg.input)) {
+      return msg.input.length;
+    }
+    // Gemini 格式: contents[]
+    if (Array.isArray(msg.contents)) {
+      return msg.contents.length;
+    }
+    // Gemini CLI 包装格式: request.contents[]
+    const requestData = msg.request as Record<string, unknown> | undefined;
+    if (requestData && Array.isArray(requestData.contents)) {
+      return requestData.contents.length;
+    }
+    return 0;
+  }
+
+  /**
+   * 获取 messages 数组（支持 Claude、Codex 和 Gemini 格式）
+   */
+  getMessages(): unknown {
+    const msg = this.request.message as Record<string, unknown>;
+    // Claude 格式优先
+    if (msg.messages !== undefined) {
+      return msg.messages;
+    }
+    // Codex 格式
+    if (msg.input !== undefined) {
+      return msg.input;
+    }
+    // Gemini 格式: contents[]
+    if (msg.contents !== undefined) {
+      return msg.contents;
+    }
+    // Gemini CLI 包装格式: request.contents[]
+    const requestData = msg.request as Record<string, unknown> | undefined;
+    if (requestData?.contents !== undefined) {
+      return requestData.contents;
+    }
+    return undefined;
+  }
+
+  /**
+   * 是否应该复用 provider（基于 messages 长度）
+   */
+  shouldReuseProvider(): boolean {
+    if (this.isRawCrossProviderFallbackEnabled()) {
+      return true;
+    }
+
+    return this.getMessagesLength() > 1;
+  }
+
+  /**
+   * 添加供应商到决策链（带详细元数据）
+   */
+  addProviderToChain(
+    provider: Provider,
+    metadata?: {
+      reason?:
+        | "session_reuse"
+        | "initial_selection"
+        | "concurrent_limit_failed"
+        | "request_success" // 修复：添加 request_success
+        | "retry_success"
+        | "retry_failed" // 供应商错误（已计入熔断器）
+        | "system_error" // 系统/网络错误（不计入熔断器）
+        | "resource_not_found" // 上游 404 错误（不计入熔断器，仅切换供应商）
+        | "retry_with_official_instructions" // Codex instructions 自动重试（官方）
+        | "retry_with_cached_instructions" // Codex instructions 智能重试（缓存）
+        | "client_error_non_retryable" // 不可重试的客户端错误（Prompt 超限、内容过滤、PDF 限制、Thinking 格式）
+        | "http2_fallback" // HTTP/2 协议错误，回退到 HTTP/1.1（不切换供应商、不计入熔断器）
+        | "endpoint_pool_exhausted" // 端点池耗尽（strict endpoint policy 阻止了 fallback）
+        | "vendor_type_all_timeout" // 供应商类型全端点超时（524），触发 vendor-type 临时熔断
+        | "client_restriction_filtered" // 供应商因客户端限制被跳过（会话复用路径）
+        | "hedge_triggered" // Hedge 计时器触发，启动备选供应商
+        | "hedge_launched" // Hedge 备选供应商已启动（信息性记录）
+        | "hedge_winner" // 该供应商赢得 Hedge 竞速（最先收到首字节）
+        | "hedge_loser_cancelled" // 该供应商输掉 Hedge 竞速，请求被取消
+        | "client_abort"; // 客户端在响应完成前断开连接
+      selectionMethod?:
+        | "session_reuse"
+        | "weighted_random"
+        | "group_filtered"
+        | "fail_open_fallback";
+      circuitState?: "closed" | "open" | "half-open";
+      attemptNumber?: number;
+      errorMessage?: string; // 错误信息（失败时记录）
+      endpointId?: number | null;
+      endpointUrl?: string;
+      // 修复：添加新字段
+      statusCode?: number; // 成功时的状态码
+      statusCodeInferred?: boolean; // statusCode 是否为响应体推断
+      circuitFailureCount?: number; // 熔断失败计数
+      circuitFailureThreshold?: number; // 熔断阈值
+      errorDetails?: ProviderChainItem["errorDetails"]; // 结构化错误详情
+      decisionContext?: ProviderChainItem["decisionContext"];
+      strictBlockCause?: ProviderChainItem["strictBlockCause"]; // endpoint pool exhaustion cause
+      endpointFilterStats?: ProviderChainItem["endpointFilterStats"]; // endpoint filter statistics
+      modelRedirect?: ProviderChainItem["modelRedirect"];
+      rawCrossProviderFallbackEnabled?: boolean;
+    }
+  ): void {
+    const item: ProviderChainItem = {
+      id: provider.id,
+      name: provider.name,
+      vendorId: provider.providerVendorId ?? undefined,
+      providerType: provider.providerType,
+      endpointId: metadata?.endpointId,
+      endpointUrl: metadata?.endpointUrl,
+      // 元数据
+      reason: metadata?.reason,
+      selectionMethod: metadata?.selectionMethod,
+      priority: provider.priority,
+      weight: provider.weight,
+      costMultiplier: provider.costMultiplier,
+      groupTag: provider.groupTag,
+      circuitState: metadata?.circuitState,
+      timestamp: Date.now(),
+      attemptNumber: metadata?.attemptNumber,
+      errorMessage: metadata?.errorMessage, // 记录错误信息
+      // 修复：记录新字段
+      statusCode: metadata?.statusCode,
+      statusCodeInferred: metadata?.statusCodeInferred,
+      circuitFailureCount: metadata?.circuitFailureCount,
+      circuitFailureThreshold: metadata?.circuitFailureThreshold,
+      errorDetails: metadata?.errorDetails, // 结构化错误详情
+      decisionContext: metadata?.decisionContext,
+      strictBlockCause: metadata?.strictBlockCause,
+      endpointFilterStats: metadata?.endpointFilterStats,
+      modelRedirect: metadata?.modelRedirect ?? this.getCurrentModelRedirect(provider.id),
+      rawCrossProviderFallbackEnabled: metadata?.rawCrossProviderFallbackEnabled,
+    };
+
+    // 避免重复添加同一个供应商
+    // 检查最后一条记录是否与当前记录完全相同（id + reason + attemptNumber）
+    const lastItem = this.providerChain[this.providerChain.length - 1];
+    const shouldAdd =
+      this.providerChain.length === 0 ||
+      lastItem.id !== provider.id ||
+      lastItem.reason !== metadata?.reason ||
+      (metadata?.attemptNumber !== undefined && lastItem.attemptNumber !== metadata.attemptNumber);
+
+    if (shouldAdd) {
+      this.providerChain.push(item);
+      this.persistLiveChain();
+    }
+  }
+
+  private persistLiveChain(): void {
+    if (!this.sessionId || this.requestSequence == null) return;
+    if (!this.shouldTrackSessionObservability()) return;
+    void writeLiveChain(this.sessionId, this.requestSequence, this.providerChain);
+  }
+
+  /**
+   * 获取决策链
+   */
+  getProviderChain(): ProviderChainItem[] {
+    return this.providerChain;
+  }
+
+  setCurrentModelRedirect(
+    providerId: number,
+    redirect: NonNullable<ProviderChainItem["modelRedirect"]>
+  ): void {
+    this.currentModelRedirect = {
+      providerId,
+      redirect,
+    };
+  }
+
+  clearCurrentModelRedirect(): void {
+    this.currentModelRedirect = null;
+  }
+
+  getCurrentModelRedirect(providerId?: number): ProviderChainItem["modelRedirect"] | undefined {
+    if (!this.currentModelRedirect) return undefined;
+    if (providerId !== undefined && this.currentModelRedirect.providerId !== providerId) {
+      return undefined;
+    }
+    return this.currentModelRedirect.redirect;
+  }
+
+  attachCurrentModelRedirectToLastChainItem(providerId: number): boolean {
+    const redirect = this.getCurrentModelRedirect(providerId);
+    if (!redirect) return false;
+
+    const lastItem = this.providerChain[this.providerChain.length - 1];
+    if (!lastItem || lastItem.id !== providerId) {
+      return false;
+    }
+
+    lastItem.modelRedirect = redirect;
+    this.persistLiveChain();
+    return true;
+  }
+
+  /**
+   * 获取原始模型（用户请求的，用于计费）
+   * 如果没有发生重定向，返回当前模型
+   */
+  getOriginalModel(): string | null {
+    return this.originalModelName ?? this.request.model;
+  }
+
+  /**
+   * 获取当前模型（可能已重定向，用于转发）
+   */
+  getCurrentModel(): string | null {
+    return this.request.model;
+  }
+
+  getOpenAIImageRequestMetadata(): OpenAIImageRequestMetadata | null {
+    return this.request.imageRequestMetadata ?? null;
+  }
+
+  isOpenAIImageMultipartRequest(): boolean {
+    return isOpenAIImageMultipartRequest(this.getOpenAIImageRequestMetadata());
+  }
+
+  getEndpointPolicy(): EndpointPolicy {
+    return this.endpointPolicy;
+  }
+
+  /**
+   * 获取请求的 API endpoint（来自 URL.pathname）
+   * 处理边界：若 URL 不存在则返回 null
+   */
+  getEndpoint(): string | null {
+    try {
+      const url = this.requestUrl;
+      if (!url || typeof url.pathname !== "string") return null;
+      return url.pathname || "/";
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 是否为 count_tokens 请求端点
+   * - 依据 URL pathname 判断：/v1/messages/count_tokens
+   */
+  isCountTokensRequest(): boolean {
+    const endpoint = this.getEndpoint();
+    return endpoint !== null && isCountTokensEndpointPath(endpoint);
+  }
+
+  /**
+   * 设置原始模型（在重定向前调用）
+   * 只能设置一次，避免多次重定向覆盖
+   * 同时保存原始 URL 路径（用于 Gemini 重置）
+   */
+  setOriginalModel(model: string | null): void {
+    if (this.originalModelName === null) {
+      this.originalModelName = model;
+      this.originalUrlPathname = this.requestUrl.pathname;
+    }
+  }
+
+  /**
+   * 检查是否发生了模型重定向
+   */
+  isModelRedirected(): boolean {
+    return this.originalModelName !== null && this.originalModelName !== this.request.model;
+  }
+
+  /**
+   * 获取原始 URL 路径（用于 Gemini 模型重定向重置）
+   */
+  getOriginalUrlPathname(): string | null {
+    return this.originalUrlPathname;
+  }
+
+  /**
+   * 检查是否为 Claude Code CLI 探测请求
+   * - [{"role":"user","content":"foo"}]
+   * - [{"role":"user","content":"count"}]
+   */
+  isProbeRequest(): boolean {
+    const messages = this.getMessages();
+
+    // 必须是单条消息
+    if (!Array.isArray(messages) || messages.length !== 1) {
+      return false;
+    }
+
+    const firstMessage = messages[0] as Record<string, unknown>;
+    const content = firstMessage.content;
+
+    // content 必须是字符串
+    if (typeof content !== "string") {
+      return false;
+    }
+
+    // 匹配探测模式（完全匹配，忽略大小写和空格）
+    const trimmed = content.trim().toLowerCase();
+    return trimmed === "foo" || trimmed === "count";
+  }
+
+  /**
+   * 检查是否为 Claude Messages Warmup 请求（仅用于 Anthropic /v1/messages）
+   *
+   * 判定标准（尽量严格，降低误判）：
+   * - endpoint 必须是 /v1/messages（排除 count_tokens 等）
+   * - messages 仅 1 条，且 role=user
+   * - content 为单个 text block
+   * - text == "Warmup"（忽略大小写/首尾空格）
+   * - cache_control.type == "ephemeral"
+   */
+  isWarmupRequest(): boolean {
+    const endpoint = this.getEndpoint();
+    if (endpoint !== "/v1/messages") {
+      return false;
+    }
+
+    const msg = this.request.message as Record<string, unknown>;
+    const messages = msg.messages;
+
+    if (!Array.isArray(messages) || messages.length !== 1) {
+      return false;
+    }
+
+    const firstMessage = messages[0];
+    if (!firstMessage || typeof firstMessage !== "object") {
+      return false;
+    }
+
+    const firstObj = firstMessage as Record<string, unknown>;
+    if (firstObj.role !== "user") {
+      return false;
+    }
+
+    const content = firstObj.content;
+    if (!Array.isArray(content) || content.length !== 1) {
+      return false;
+    }
+
+    const firstBlock = content[0];
+    if (!firstBlock || typeof firstBlock !== "object") {
+      return false;
+    }
+
+    const blockObj = firstBlock as Record<string, unknown>;
+    if (blockObj.type !== "text") {
+      return false;
+    }
+
+    const text = typeof blockObj.text === "string" ? blockObj.text.trim() : "";
+    if (!text || text.toLowerCase() !== "warmup") {
+      return false;
+    }
+
+    const cacheControl = blockObj.cache_control;
+    if (!cacheControl || typeof cacheControl !== "object") {
+      return false;
+    }
+
+    const cacheControlObj = cacheControl as Record<string, unknown>;
+    return cacheControlObj.type === "ephemeral";
+  }
+
+  /**
+   * 设置上次选择的决策上下文（用于记录到 providerChain）
+   */
+  setLastSelectionContext(context: ProviderChainItem["decisionContext"]): void {
+    this._lastSelectionContext = context;
+  }
+
+  /**
+   * 获取上次选择的决策上下文
+   */
+  getLastSelectionContext(): ProviderChainItem["decisionContext"] | undefined {
+    return this._lastSelectionContext;
+  }
+
+  /**
+   * Get cached price data with lazy loading
+   * Returns null if model not found or no pricing available
+   */
+  async getCachedPriceData(): Promise<ModelPriceData | null> {
+    if (this.cachedPriceData === undefined && this.request.model) {
+      const result = await findLatestPriceByModel(this.request.model);
+      this.cachedPriceData = result?.priceData ?? null;
+    }
+    return this.cachedPriceData ?? null;
+  }
+
+  async getResolvedPricingByBillingSource(
+    provider?: Provider | null
+  ): Promise<ResolvedPricing | null> {
+    const originalModel = this.getOriginalModel();
+    const redirectedModel = this.request.model;
+    if (!originalModel && !redirectedModel) {
+      return null;
+    }
+
+    if (this.cachedBillingModelSource === undefined) {
+      await this.loadBillingSettings();
+    }
+
+    if (!this.hasUsableBillingSettings()) {
+      logger.warn("[ProxySession] Billing settings unavailable, using fallback billing source", {
+        billingSettingsSource: this.billingSettingsSource,
+        fallbackBillingModelSource: this.cachedBillingModelSource,
+      });
+    }
+
+    const providerIdentity = provider ?? this.provider;
+    const cacheKey = [
+      this.cachedBillingModelSource,
+      originalModel ?? "",
+      redirectedModel ?? "",
+      providerIdentity?.id ?? 0,
+      providerIdentity?.name ?? "",
+      providerIdentity?.url ?? "",
+    ].join("|");
+
+    if (this.resolvedPricingCache.has(cacheKey)) {
+      return this.resolvedPricingCache.get(cacheKey) ?? null;
+    }
+
+    const useOriginal = this.cachedBillingModelSource === "original";
+    const primaryModel = useOriginal ? originalModel : redirectedModel;
+    const fallbackModel = useOriginal ? redirectedModel : originalModel;
+
+    const primaryRecord = primaryModel ? await findLatestPriceByModel(primaryModel) : null;
+    let resolved = resolvePricingForModelRecords({
+      provider: providerIdentity,
+      primaryModelName: primaryModel,
+      fallbackModelName: null,
+      primaryRecord,
+      fallbackRecord: null,
+    });
+
+    if (!resolved && fallbackModel && fallbackModel !== primaryModel) {
+      const fallbackRecord = await findLatestPriceByModel(fallbackModel);
+      resolved = resolvePricingForModelRecords({
+        provider: providerIdentity,
+        primaryModelName: primaryModel,
+        fallbackModelName: fallbackModel,
+        primaryRecord,
+        fallbackRecord,
+      });
+    }
+
+    this.resolvedPricingCache.set(cacheKey, resolved ?? null);
+    return resolved ?? null;
+  }
+
+  /**
+   * 根据系统配置的计费模型来源获取价格数据（带缓存）
+   *
+   * billingModelSource:
+   * - "original": 优先使用重定向前模型（getOriginalModel）
+   * - "redirected": 优先使用重定向后模型（request.model）
+   *
+   * Fallback：主模型无价格时尝试备选模型。
+   *
+   * @returns 价格数据；无模型或无价格时返回 null
+   */
+  async getCachedPriceDataByBillingSource(
+    provider?: Provider | null
+  ): Promise<ModelPriceData | null> {
+    const resolved = await this.getResolvedPricingByBillingSource(provider);
+    return resolved?.priceData ?? null;
+  }
+
+  async getCodexPriorityBillingSource(): Promise<CodexPriorityBillingSource> {
+    if (this.cachedCodexPriorityBillingSource === undefined) {
+      await this.loadBillingSettings();
+    }
+
+    return this.cachedCodexPriorityBillingSource ?? "requested";
+  }
+
+  private async loadBillingSettings(): Promise<void> {
+    if (!this.billingSettingsPromise) {
+      this.billingSettingsPromise = (async () => {
+        try {
+          const { getSystemSettings } = await import("@/repository/system-config");
+          const systemSettings = await getSystemSettings();
+
+          const billingModelSource =
+            systemSettings.billingModelSource === "original" ||
+            systemSettings.billingModelSource === "redirected"
+              ? systemSettings.billingModelSource
+              : "redirected";
+          const codexPriorityBillingSource =
+            systemSettings.codexPriorityBillingSource === "actual" ||
+            systemSettings.codexPriorityBillingSource === "requested"
+              ? systemSettings.codexPriorityBillingSource
+              : "requested";
+
+          if (billingModelSource !== systemSettings.billingModelSource) {
+            logger.warn(
+              `[ProxySession] Invalid billingModelSource: ${String(systemSettings.billingModelSource)}, fallback to "redirected"`
+            );
+          }
+          if (codexPriorityBillingSource !== systemSettings.codexPriorityBillingSource) {
+            logger.warn(
+              `[ProxySession] Invalid codexPriorityBillingSource: ${String(systemSettings.codexPriorityBillingSource)}, fallback to "requested"`
+            );
+          }
+
+          return {
+            billingModelSource,
+            codexPriorityBillingSource,
+            source: "live" as const,
+          };
+        } catch (error) {
+          logger.warn(
+            "[ProxySession] Failed to load billing settings directly, trying cached fallback",
+            {
+              error,
+            }
+          );
+
+          const { getCachedSystemSettingsOnlyCache } = await import("@/lib/config");
+          const cachedSettings = getCachedSystemSettingsOnlyCache();
+          const hasPersistedCachedSettings = cachedSettings != null && cachedSettings.id !== 0;
+          if (hasPersistedCachedSettings && cachedSettings) {
+            return {
+              billingModelSource:
+                cachedSettings.billingModelSource === "original" ? "original" : "redirected",
+              codexPriorityBillingSource:
+                cachedSettings.codexPriorityBillingSource === "actual" ? "actual" : "requested",
+              source: "cache" as const,
+            };
+          }
+
+          logger.error("[ProxySession] Billing settings unavailable after direct read failure", {
+            error,
+          });
+          return {
+            billingModelSource: "redirected" as BillingModelSource,
+            codexPriorityBillingSource: "requested" as CodexPriorityBillingSource,
+            source: "default" as const,
+          };
+        }
+      })();
+    }
+
+    const settings = await this.billingSettingsPromise;
+    this.cachedBillingModelSource = settings.billingModelSource;
+    this.cachedCodexPriorityBillingSource = settings.codexPriorityBillingSource;
+    this.billingSettingsSource = settings.source;
+  }
+
+  private hasUsableBillingSettings(): boolean {
+    return (
+      this.cachedBillingModelSource === "original" || this.cachedBillingModelSource === "redirected"
+    );
+  }
+}
+
+function formatHeadersForLog(headers: Headers): string {
+  const collected: string[] = [];
+  headers.forEach((value, key) => {
+    collected.push(`${key}: ${value}`);
+  });
+
+  return collected.length > 0 ? collected.join("\n") : "(empty)";
+}
+
+function optimizeRequestMessage(message: Record<string, unknown>): Record<string, unknown> {
+  const optimized = { ...message };
+
+  if (Array.isArray(optimized.system)) {
+    optimized.system = new Array(optimized.system.length).fill(0);
+  }
+  if (Array.isArray(optimized.messages)) {
+    optimized.messages = new Array(optimized.messages.length).fill(0);
+  }
+  if (Array.isArray(optimized.tools)) {
+    optimized.tools = new Array(optimized.tools.length).fill(0);
+  }
+
+  return optimized;
+}
+
+function resolveSessionEndpointPolicy(requestUrl: URL): EndpointPolicy {
+  try {
+    const pathname = requestUrl.pathname;
+    if (typeof pathname === "string" && pathname.length > 0) {
+      return resolveEndpointPolicy(pathname);
+    }
+  } catch {}
+
+  return resolveEndpointPolicy("/");
+}
+
+export function extractModelFromPath(pathname: string): string | null {
+  // 匹配 Vertex AI 路径：/v1/publishers/google/models/{model}:<action>
+  const publishersMatch = pathname.match(/\/publishers\/google\/models\/([^/:]+)(?::[^/]+)?/);
+  if (publishersMatch?.[1]) {
+    return publishersMatch[1];
+  }
+
+  // 匹配官方 Gemini 路径：/v1beta/models/{model}:<action>
+  const geminiMatch = pathname.match(/\/v1beta\/models\/([^/:]+)(?::[^/]+)?/);
+  if (geminiMatch?.[1]) {
+    return geminiMatch[1];
+  }
+
+  // 兼容 /v1/models/{model}:<action> 形式（未来可能的正式版本）
+  const v1Match = pathname.match(/\/v1\/models\/([^/:]+)(?::[^/]+)?/);
+  if (v1Match?.[1]) {
+    return v1Match[1];
+  }
+
+  return null;
+}
+
+/**
+ * Large request body threshold (10MB)
+ * When request body exceeds this size and model field is missing,
+ * return a friendly error suggesting possible truncation by proxy limit.
+ * Related config: next.config.ts proxyClientMaxBodySize (100MB)
+ */
+const LARGE_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
+
+function parseContentLengthHeader(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+async function parseRequestBody(c: Context): Promise<RequestBodyResult> {
+  const method = c.req.method.toUpperCase();
+  const hasBody = method !== "GET" && method !== "HEAD";
+
+  if (!hasBody) {
+    return { requestMessage: {}, requestBodyLog: "(empty)" };
+  }
+
+  const contentLength = parseContentLengthHeader(c.req.header("content-length"));
+  const contentType = c.req.header("content-type") ?? null;
+  const pathname = new URL(c.req.url).pathname;
+  const requestBodyBuffer = await c.req.raw.clone().arrayBuffer();
+  const actualBodyBytes = requestBodyBuffer.byteLength;
+  const requestBodyText = new TextDecoder().decode(requestBodyBuffer);
+
+  // Truncation detection: warn only when both conditions are met
+  // 1. Absolute difference > 1MB (avoid false positives from minor discrepancies)
+  // 2. Actual body < 80% of expected (significant truncation)
+  const MIN_TRUNCATION_DIFF_BYTES = 1024 * 1024; // 1MB
+  const TRUNCATION_RATIO_THRESHOLD = 0.8;
+  if (
+    contentLength !== null &&
+    contentLength - actualBodyBytes > MIN_TRUNCATION_DIFF_BYTES &&
+    actualBodyBytes < contentLength * TRUNCATION_RATIO_THRESHOLD
+  ) {
+    logger.warn("[parseRequestBody] Possible body truncation detected", {
+      pathname: new URL(c.req.url).pathname,
+      method,
+      contentLength,
+      actualBodyBytes,
+      ratio: (actualBodyBytes / contentLength).toFixed(2),
+    });
+  }
+
+  let requestMessage: Record<string, unknown> = {};
+  let requestBodyLog: string;
+  let requestBodyLogNote: string | undefined;
+  let imageRequestMetadata: OpenAIImageRequestMetadata | null = null;
+
+  if (getOpenAIImageEndpoint(pathname) && isOpenAIImageMultipartContentType(contentType)) {
+    // 图片 multipart 请求保留 sidecar metadata，并为过滤/敏感词提供文本字段视图。
+    imageRequestMetadata = await parseOpenAIImageMultipartMetadata(
+      c.req.raw,
+      pathname,
+      contentType
+    );
+    requestMessage = buildOpenAIImageLogicalBody(imageRequestMetadata);
+    requestBodyLog = imageRequestMetadata
+      ? getOpenAIImageMultipartSummary(imageRequestMetadata)
+      : "(multipart image request)";
+    requestBodyLogNote = "图片 multipart 请求已记录结构化摘要。";
+
+    return {
+      requestMessage,
+      requestBodyLog,
+      requestBodyLogNote,
+      requestBodyBuffer,
+      contentLength,
+      actualBodyBytes,
+      imageRequestMetadata,
+    };
+  }
+
+  try {
+    const parsedMessage = JSON.parse(requestBodyText) as Record<string, unknown>;
+    requestMessage = parsedMessage; // 保留原始数据用于业务逻辑
+    requestBodyLog = JSON.stringify(optimizeRequestMessage(parsedMessage), null, 2); // 仅在日志中优化
+  } catch {
+    requestMessage = { raw: requestBodyText };
+    requestBodyLog = requestBodyText;
+    requestBodyLogNote = "请求体不是合法 JSON，已记录原始文本。";
+  }
+
+  return {
+    requestMessage,
+    requestBodyLog,
+    requestBodyLogNote,
+    requestBodyBuffer,
+    contentLength,
+    actualBodyBytes,
+    imageRequestMetadata,
+  };
+}

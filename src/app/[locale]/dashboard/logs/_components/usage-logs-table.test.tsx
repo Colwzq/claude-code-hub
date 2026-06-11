@@ -1,0 +1,388 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import type { ReactNode } from "react";
+import { createRoot } from "react-dom/client";
+import { act } from "react";
+import { describe, expect, test, vi } from "vitest";
+
+import type { UsageLogRow } from "@/repository/usage-logs";
+
+vi.mock("next-intl", () => ({
+  useTranslations: () => (key: string) => key,
+}));
+
+const toastMocks = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: toastMocks,
+}));
+
+vi.mock("@/components/ui/tooltip", () => ({
+  TooltipProvider: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Tooltip: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  TooltipTrigger: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  TooltipContent: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+}));
+
+vi.mock("@/components/ui/relative-time", () => ({
+  RelativeTime: ({ fallback }: { fallback: string }) => <span>{fallback}</span>,
+}));
+
+vi.mock("./model-display-with-redirect", () => ({
+  ModelDisplayWithRedirect: ({
+    currentModel,
+    onRedirectClick,
+  }: {
+    currentModel: string | null;
+    onRedirectClick?: () => void;
+  }) => (
+    <button type="button" data-slot="model-redirect" onClick={onRedirectClick}>
+      {currentModel ?? "-"}
+    </button>
+  ),
+}));
+
+vi.mock("./error-details-dialog", () => ({
+  ErrorDetailsDialog: () => <div data-slot="error-details-dialog" />,
+}));
+
+import { UsageLogsTable } from "./usage-logs-table";
+
+function makeLog(overrides: Partial<UsageLogRow>): UsageLogRow {
+  return {
+    id: 1,
+    createdAt: new Date(),
+    sessionId: null,
+    requestSequence: null,
+    userName: "u",
+    keyName: "k",
+    providerName: "p",
+    model: "m",
+    originalModel: null,
+    actualResponseModel: null,
+    endpoint: "/v1/messages",
+    statusCode: 200,
+    inputTokens: 1,
+    outputTokens: 1,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreation5mInputTokens: 0,
+    cacheCreation1hInputTokens: 0,
+    cacheTtlApplied: null,
+    totalTokens: 2,
+    costUsd: "0.01",
+    costMultiplier: null,
+    groupCostMultiplier: null,
+    costBreakdown: null,
+    durationMs: 100,
+    ttfbMs: 50,
+    errorMessage: null,
+    providerChain: null,
+    blockedBy: null,
+    blockedReason: null,
+    userAgent: null,
+    clientIp: null,
+    messagesCount: null,
+    context1mApplied: null,
+    swapCacheTtlApplied: null,
+    specialSettings: null,
+    ...overrides,
+  };
+}
+
+describe("usage-logs-table multiplier badge", () => {
+  test("does not render multiplier badge for null/undefined/empty/NaN/Infinity", () => {
+    for (const costMultiplier of [null, undefined, "", "NaN", "Infinity"] as const) {
+      const html = renderToStaticMarkup(
+        <UsageLogsTable
+          logs={[makeLog({ id: 1, costMultiplier })]}
+          total={1}
+          page={1}
+          pageSize={50}
+          onPageChange={() => {}}
+          isPending={false}
+        />
+      );
+
+      expect(html).not.toContain("×0.00");
+      expect(html).not.toContain("×NaN");
+      expect(html).not.toContain("×Infinity");
+    }
+  });
+
+  test("renders multiplier badge when finite and != 1", () => {
+    const html = renderToStaticMarkup(
+      <UsageLogsTable
+        logs={[makeLog({ id: 1, costMultiplier: "0.2" })]}
+        total={1}
+        page={1}
+        pageSize={50}
+        onPageChange={() => {}}
+        isPending={false}
+      />
+    );
+
+    expect(html).toContain("×0.20");
+    expect(html).toContain("0.20x");
+  });
+
+  test("renders warmup skipped and blocked labels", () => {
+    const htmlWarmup = renderToStaticMarkup(
+      <UsageLogsTable
+        logs={[makeLog({ id: 1, blockedBy: "warmup" })]}
+        total={1}
+        page={1}
+        pageSize={50}
+        onPageChange={() => {}}
+        isPending={false}
+      />
+    );
+    expect(htmlWarmup).toContain("logs.table.skipped");
+
+    const htmlBlocked = renderToStaticMarkup(
+      <UsageLogsTable
+        logs={[makeLog({ id: 1, blockedBy: "sensitive_word" })]}
+        total={1}
+        page={1}
+        pageSize={50}
+        onPageChange={() => {}}
+        isPending={false}
+      />
+    );
+    expect(htmlBlocked).toContain("logs.table.blocked");
+  });
+
+  test("invokes model redirect and pagination callbacks", async () => {
+    const onPageChange = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <UsageLogsTable
+          logs={[makeLog({ id: 1, costMultiplier: "0.2" })]}
+          total={100}
+          page={1}
+          pageSize={50}
+          onPageChange={onPageChange}
+          isPending={false}
+        />
+      );
+    });
+
+    // Trigger model redirect click (covers onRedirectClick handler)
+    const redirectButton = container.querySelector('button[data-slot="model-redirect"]');
+    expect(redirectButton).not.toBeNull();
+    await act(async () => {
+      redirectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Trigger pagination (covers onClick handlers)
+    const nextButton = Array.from(container.querySelectorAll("button")).find((b) =>
+      (b.textContent ?? "").includes("logs.table.nextPage")
+    );
+    expect(nextButton).not.toBeUndefined();
+    await act(async () => {
+      nextButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onPageChange).toHaveBeenCalledWith(2);
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  test("hides tok/s when TTFB is close to duration and rate is abnormally high", () => {
+    // Rule: generationTimeMs / durationMs < 0.1 && outputRate > 5000 => hide tok/s
+    // durationMs=1000, ttfbMs=950 => generationTimeMs=50, ratio=0.05 < 0.1
+    // outputTokens=300 => rate = 300 / 0.05 = 6000 > 5000 => should hide
+    const html = renderToStaticMarkup(
+      <UsageLogsTable
+        logs={[makeLog({ id: 1, durationMs: 1000, ttfbMs: 950, outputTokens: 300 })]}
+        total={1}
+        page={1}
+        pageSize={50}
+        onPageChange={() => {}}
+        isPending={false}
+      />
+    );
+
+    // tok/s should NOT appear
+    expect(html).not.toContain("tok/s");
+    // TTFB should still appear
+    expect(html).toContain("TTFB");
+  });
+
+  test("shows tok/s when conditions are normal", () => {
+    // durationMs=1000, ttfbMs=500 => generationTimeMs=500, ratio=0.5 >= 0.1
+    // outputTokens=50 => rate = 50 / 0.5 = 100 <= 5000 => should show
+    const html = renderToStaticMarkup(
+      <UsageLogsTable
+        logs={[makeLog({ id: 1, durationMs: 1000, ttfbMs: 500, outputTokens: 50 })]}
+        total={1}
+        page={1}
+        pageSize={50}
+        onPageChange={() => {}}
+        isPending={false}
+      />
+    );
+
+    // tok/s should appear
+    expect(html).toContain("tok/s");
+    // TTFB should also appear
+    expect(html).toContain("TTFB");
+  });
+
+  test("renders swap indicator on cacheTtl badge when swapCacheTtlApplied is true", () => {
+    const html = renderToStaticMarkup(
+      <UsageLogsTable
+        logs={[makeLog({ id: 1, cacheTtlApplied: "5m", swapCacheTtlApplied: true })]}
+        total={1}
+        page={1}
+        pageSize={50}
+        onPageChange={() => {}}
+        isPending={false}
+      />
+    );
+
+    // Should contain the swap indicator "~"
+    expect(html).toContain("5m ~");
+    // Should contain amber styling
+    expect(html).toContain("bg-amber-50");
+  });
+
+  test("renders fast badge when codex priority service tier is recorded", () => {
+    const html = renderToStaticMarkup(
+      <UsageLogsTable
+        logs={[
+          makeLog({
+            id: 1,
+            specialSettings: [
+              {
+                type: "provider_parameter_override",
+                scope: "provider",
+                providerId: 1,
+                providerName: "codex-provider",
+                providerType: "codex",
+                hit: true,
+                changed: true,
+                changes: [{ path: "service_tier", before: null, after: "priority", changed: true }],
+              },
+            ],
+          }),
+        ]}
+        total={1}
+        page={1}
+        pageSize={50}
+        onPageChange={() => {}}
+        isPending={false}
+      />
+    );
+
+    expect(html).toContain("logs.billingDetails.fast");
+  });
+
+  test("does not render swap indicator when swapCacheTtlApplied is false", () => {
+    const html = renderToStaticMarkup(
+      <UsageLogsTable
+        logs={[makeLog({ id: 1, cacheTtlApplied: "5m", swapCacheTtlApplied: false })]}
+        total={1}
+        page={1}
+        pageSize={50}
+        onPageChange={() => {}}
+        isPending={false}
+      />
+    );
+
+    // Should contain the TTL value without swap indicator
+    expect(html).toContain("5m");
+    expect(html).not.toContain("5m ~");
+    // Should not contain amber styling
+    expect(html).not.toContain("bg-amber-50");
+  });
+
+  test("copies sessionId on click and shows toast", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    Object.defineProperty(window, "isSecureContext", {
+      value: true,
+      configurable: true,
+    });
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <UsageLogsTable
+          logs={[makeLog({ id: 1, sessionId: "session_test" })]}
+          total={1}
+          page={1}
+          pageSize={50}
+          onPageChange={() => {}}
+          isPending={false}
+        />
+      );
+    });
+
+    const sessionBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+      (b.textContent ?? "").includes("session_test")
+    );
+    expect(sessionBtn).not.toBeUndefined();
+
+    await act(async () => {
+      sessionBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(writeText).toHaveBeenCalledWith("session_test");
+    expect(toastMocks.success).toHaveBeenCalledWith("actions.copied");
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+});
+
+describe("usage-logs-table pricing resolution", () => {
+  test("renders pricing provider and source details when pricing_resolution special setting exists", () => {
+    const html = renderToStaticMarkup(
+      <UsageLogsTable
+        logs={[
+          makeLog({
+            id: 1,
+            specialSettings: [
+              {
+                type: "pricing_resolution",
+                scope: "billing",
+                hit: true,
+                modelName: "gpt-5.4",
+                resolvedModelName: "gpt-5.4",
+                resolvedPricingProviderKey: "openai",
+                source: "priority_fallback",
+              },
+            ],
+          }),
+        ]}
+        total={1}
+        page={1}
+        pageSize={50}
+        onPageChange={() => {}}
+        isPending={false}
+      />
+    );
+
+    expect(html).toContain("logs.billingDetails.pricingProvider");
+    expect(html).toContain("openai");
+    expect(html).toContain("logs.billingDetails.pricingSource.priority_fallback");
+  });
+});

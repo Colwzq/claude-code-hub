@@ -1,0 +1,626 @@
+"use client";
+
+import { useTranslations } from "next-intl";
+import { type MouseEvent, useCallback, useState } from "react";
+import { toast } from "sonner";
+import { IpDetailsDialog } from "@/app/[locale]/dashboard/_components/ip-details-dialog";
+import { IpDisplayTrigger } from "@/app/[locale]/dashboard/_components/ip-display-trigger";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { RelativeTime } from "@/components/ui/relative-time";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn, formatTokenAmount } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/utils/clipboard";
+import type { CurrencyCode } from "@/lib/utils/currency";
+import { formatCurrency } from "@/lib/utils/currency";
+import {
+  calculateOutputRate,
+  formatDuration,
+  isNonBillingEndpoint,
+  shouldHideOutputRate,
+} from "@/lib/utils/performance-formatter";
+import { shouldShowCostBadgeInCell } from "@/lib/utils/provider-chain-display";
+import { formatProviderSummary, getFinalProviderName } from "@/lib/utils/provider-chain-formatter";
+import {
+  getPricingResolutionSpecialSetting,
+  hasPriorityServiceTierSpecialSetting,
+} from "@/lib/utils/special-settings";
+import type { UsageLogRow } from "@/repository/usage-logs";
+import type { BillingModelSource } from "@/types/system-config";
+import { ErrorDetailsDialog } from "./error-details-dialog";
+import { ModelDisplayWithRedirect } from "./model-display-with-redirect";
+import { ProviderChainPopover } from "./provider-chain-popover";
+
+interface UsageLogsTableProps {
+  logs: UsageLogRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  isPending: boolean;
+  newLogIds?: Set<number>; // 新增记录 ID 集合（用于动画高亮）
+  currencyCode?: CurrencyCode;
+  billingModelSource?: BillingModelSource;
+}
+
+export function UsageLogsTable({
+  logs,
+  total,
+  page,
+  pageSize,
+  onPageChange,
+  isPending,
+  newLogIds,
+  currencyCode = "USD",
+  billingModelSource = "original",
+}: UsageLogsTableProps) {
+  const t = useTranslations("dashboard");
+  const tChain = useTranslations("provider-chain");
+  const totalPages = Math.ceil(total / pageSize);
+  const getPricingSourceLabel = (source: string) =>
+    t(`logs.billingDetails.pricingSource.${source}`);
+
+  // 弹窗状态管理：记录当前打开的行 ID 和是否需要滚动到重定向部分
+  const [dialogState, setDialogState] = useState<{
+    logId: number | null;
+    scrollToRedirect: boolean;
+    targetTab?: "summary" | "logic-trace" | "performance";
+    expandedChainIndex?: number;
+  }>({ logId: null, scrollToRedirect: false });
+
+  const [ipDialogOpen, setIpDialogOpen] = useState(false);
+  const [ipDialogValue, setIpDialogValue] = useState<string | null>(null);
+
+  const handleCopySessionIdClick = useCallback(
+    (event: MouseEvent<HTMLButtonElement>) => {
+      const sessionId = event.currentTarget.dataset.sessionId;
+      if (!sessionId) return;
+
+      void copyTextToClipboard(sessionId).then((ok) => {
+        if (ok) toast.success(t("actions.copied"));
+      });
+    },
+    [t]
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-md border overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>{t("logs.columns.time")}</TableHead>
+              <TableHead>{t("logs.columns.user")}</TableHead>
+              <TableHead>{t("logs.columns.key")}</TableHead>
+              <TableHead>{t("logs.columns.sessionId")}</TableHead>
+              <TableHead className="w-[140px] max-w-[140px]">{t("logs.columns.ip")}</TableHead>
+              <TableHead>{t("logs.columns.provider")}</TableHead>
+              <TableHead>{t("logs.columns.model")}</TableHead>
+              <TableHead className="text-right">{t("logs.columns.tokens")}</TableHead>
+              <TableHead className="text-right">{t("logs.columns.cache")}</TableHead>
+              <TableHead className="text-right">{t("logs.columns.cost")}</TableHead>
+              <TableHead className="text-right">{t("logs.columns.performance")}</TableHead>
+              <TableHead>{t("logs.columns.status")}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {logs.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={12} className="text-center text-muted-foreground">
+                  {t("logs.table.noData")}
+                </TableCell>
+              </TableRow>
+            ) : (
+              logs.map((log) => {
+                const isNonBilling = isNonBillingEndpoint(log.endpoint);
+                const isWarmupSkipped = log.blockedBy === "warmup";
+                const isMutedRow = isNonBilling || isWarmupSkipped;
+                const pricingResolution = getPricingResolutionSpecialSetting(log.specialSettings);
+
+                // 计算倍率（用于 Provider 列 Badge 和成本明细）
+                const successfulProvider =
+                  log.providerChain && log.providerChain.length > 0
+                    ? [...log.providerChain]
+                        .reverse()
+                        .find(
+                          (item) =>
+                            item.reason === "request_success" ||
+                            item.reason === "retry_success" ||
+                            item.reason === "hedge_winner"
+                        )
+                    : null;
+
+                const actualCostMultiplier =
+                  successfulProvider?.costMultiplier ?? log.costMultiplier;
+                const multiplier =
+                  actualCostMultiplier === "" || actualCostMultiplier == null
+                    ? null
+                    : Number(actualCostMultiplier);
+                const hasCostBadge =
+                  multiplier != null && Number.isFinite(multiplier) && multiplier !== 1;
+
+                return (
+                  <TableRow
+                    key={log.id}
+                    className={cn(
+                      newLogIds?.has(log.id) ? "animate-highlight-flash" : "",
+                      isMutedRow ? "bg-muted/60 text-muted-foreground dark:bg-muted/20" : ""
+                    )}
+                    aria-label={isNonBilling ? t("logs.table.nonBilling") : undefined}
+                  >
+                    <TableCell className="font-mono text-xs w-[90px] max-w-[90px] overflow-hidden">
+                      <div className="truncate">
+                        <RelativeTime date={log.createdAt} fallback="-" format="short" />
+                      </div>
+                    </TableCell>
+                    <TableCell>{log.userName}</TableCell>
+                    <TableCell className="font-mono text-xs">{log.keyName}</TableCell>
+                    <TableCell className="font-mono text-xs w-[140px] max-w-[140px]">
+                      {log.sessionId ? (
+                        <TooltipProvider>
+                          <Tooltip delayDuration={300}>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                className="w-full text-left truncate cursor-pointer hover:underline"
+                                data-session-id={log.sessionId}
+                                onClick={handleCopySessionIdClick}
+                              >
+                                {log.sessionId}
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" align="start" className="max-w-[500px]">
+                              <p className="text-xs whitespace-normal break-words font-mono">
+                                {log.sessionId}
+                              </p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="w-[140px] max-w-[140px] overflow-hidden font-mono text-xs">
+                      <IpDisplayTrigger
+                        ip={log.clientIp}
+                        onClick={() => {
+                          setIpDialogValue(log.clientIp as string);
+                          setIpDialogOpen(true);
+                        }}
+                      />
+                    </TableCell>
+                    <TableCell className="text-left">
+                      {isWarmupSkipped ? (
+                        // Warmup 被跳过的请求显示“抢答/跳过”标记
+                        <span className="inline-flex items-center gap-1 rounded-md bg-blue-100 dark:bg-blue-950 px-2 py-1 text-xs font-medium text-blue-700 dark:text-blue-300">
+                          <span className="h-1.5 w-1.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+                          {t("logs.table.skipped")}
+                        </span>
+                      ) : log.blockedBy ? (
+                        // 被拦截的请求显示拦截标记
+                        <span className="inline-flex items-center gap-1 rounded-md bg-orange-100 dark:bg-orange-950 px-2 py-1 text-xs font-medium text-orange-700 dark:text-orange-300">
+                          <span className="h-1.5 w-1.5 rounded-full bg-orange-600 dark:bg-orange-400" />
+                          {t("logs.table.blocked")}
+                        </span>
+                      ) : (
+                        <div className="flex items-start gap-2">
+                          <div className="flex flex-col items-start gap-0.5 min-w-0 flex-1">
+                            <div className="w-full">
+                              <ProviderChainPopover
+                                chain={log.providerChain ?? []}
+                                finalProvider={
+                                  getFinalProviderName(log.providerChain ?? []) ||
+                                  log.providerName ||
+                                  tChain("circuit.unknown")
+                                }
+                                hasCostBadge={hasCostBadge}
+                                onChainItemClick={(chainIndex) => {
+                                  setDialogState({
+                                    logId: log.id,
+                                    scrollToRedirect: false,
+                                    targetTab: "logic-trace",
+                                    expandedChainIndex: chainIndex,
+                                  });
+                                }}
+                              />
+                            </div>
+                            {/* 摘要文字（第二行显示，左对齐） */}
+                            {log.providerChain &&
+                              log.providerChain.length > 0 &&
+                              formatProviderSummary(log.providerChain, tChain) && (
+                                <div className="w-full">
+                                  <TooltipProvider>
+                                    <Tooltip delayDuration={300}>
+                                      <TooltipTrigger asChild>
+                                        <span className="text-xs text-muted-foreground cursor-help truncate max-w-[200px] block text-left">
+                                          {formatProviderSummary(log.providerChain, tChain)}
+                                        </span>
+                                      </TooltipTrigger>
+                                      <TooltipContent
+                                        side="bottom"
+                                        align="start"
+                                        className="max-w-[500px]"
+                                      >
+                                        <p className="text-xs whitespace-normal break-words font-mono">
+                                          {formatProviderSummary(log.providerChain, tChain)}
+                                        </p>
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  </TooltipProvider>
+                                </div>
+                              )}
+                          </div>
+                          {/* 显示供应商倍率 Badge（不为 1.0 时） */}
+                          {shouldShowCostBadgeInCell(log.providerChain, multiplier) ? (
+                            <Badge
+                              variant="outline"
+                              className={
+                                multiplier! > 1
+                                  ? "text-xs bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950/30 dark:text-orange-300 dark:border-orange-800 shrink-0"
+                                  : "text-xs bg-green-50 text-green-700 border-green-200 dark:bg-green-950/30 dark:text-green-300 dark:border-green-800 shrink-0"
+                              }
+                            >
+                              ×{multiplier!.toFixed(2)}
+                            </Badge>
+                          ) : null}
+                        </div>
+                      )}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs w-[220px] max-w-[220px]">
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="min-w-0 cursor-help">
+                              <ModelDisplayWithRedirect
+                                originalModel={log.originalModel}
+                                currentModel={log.model}
+                                actualResponseModel={log.actualResponseModel}
+                                billingModelSource={billingModelSource}
+                                onRedirectClick={() =>
+                                  setDialogState({ logId: log.id, scrollToRedirect: true })
+                                }
+                              />
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p className="text-xs">{log.originalModel || log.model || "-"}</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs">
+                      <TooltipProvider>
+                        <Tooltip delayDuration={250}>
+                          <TooltipTrigger asChild>
+                            <span className="cursor-help">
+                              {formatTokenAmount(log.inputTokens)} /{" "}
+                              {formatTokenAmount(log.outputTokens)}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent align="end" className="text-xs space-y-1">
+                            <div>
+                              {t("logs.billingDetails.input")}: {formatTokenAmount(log.inputTokens)}
+                            </div>
+                            <div>
+                              {t("logs.billingDetails.output")}:{" "}
+                              {formatTokenAmount(log.outputTokens)}
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs">
+                      <TooltipProvider>
+                        <Tooltip delayDuration={250}>
+                          <TooltipTrigger asChild>
+                            <div className="flex items-center gap-2 w-full cursor-help">
+                              {log.cacheTtlApplied ? (
+                                <Badge
+                                  variant="outline"
+                                  className={cn(
+                                    "text-[10px] leading-tight px-1",
+                                    log.swapCacheTtlApplied
+                                      ? "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-800"
+                                      : ""
+                                  )}
+                                  title={
+                                    log.swapCacheTtlApplied
+                                      ? t("logs.billingDetails.cacheTtlSwapped")
+                                      : undefined
+                                  }
+                                >
+                                  {log.cacheTtlApplied}
+                                  {log.swapCacheTtlApplied ? " ~" : ""}
+                                </Badge>
+                              ) : null}
+                              <span className="ml-auto">
+                                {formatTokenAmount(log.cacheCreationInputTokens)} /{" "}
+                                {formatTokenAmount(log.cacheReadInputTokens)}
+                              </span>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent align="end" className="text-xs space-y-1">
+                            <div className="font-medium">{t("logs.columns.cacheWrite")}</div>
+                            <div className="pl-2">
+                              5m:{" "}
+                              {formatTokenAmount(
+                                (log.cacheCreation5mInputTokens ?? 0) > 0
+                                  ? log.cacheCreation5mInputTokens
+                                  : log.cacheTtlApplied !== "1h"
+                                    ? log.cacheCreationInputTokens
+                                    : 0
+                              )}
+                            </div>
+                            <div className="pl-2">
+                              1h:{" "}
+                              {formatTokenAmount(
+                                (log.cacheCreation1hInputTokens ?? 0) > 0
+                                  ? log.cacheCreation1hInputTokens
+                                  : log.cacheTtlApplied === "1h"
+                                    ? log.cacheCreationInputTokens
+                                    : 0
+                              )}
+                            </div>
+                            <div className="font-medium mt-1">{t("logs.columns.cacheRead")}</div>
+                            <div className="pl-2">
+                              {formatTokenAmount(log.cacheReadInputTokens)}
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs">
+                      {isWarmupSkipped ? (
+                        <TooltipProvider>
+                          <Tooltip delayDuration={250}>
+                            <TooltipTrigger asChild>
+                              <span className="cursor-help inline-flex items-center gap-1">
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] leading-tight px-1 bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/30 dark:text-blue-300 dark:border-blue-800"
+                                >
+                                  {t("logs.table.skipped")}
+                                </Badge>
+                                <span className="text-[10px] text-muted-foreground">Warmup</span>
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent align="end" className="text-xs max-w-[320px]">
+                              {t("logs.details.skipped.desc")}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : isNonBilling ? (
+                        "-"
+                      ) : log.costUsd != null ? (
+                        <TooltipProvider>
+                          <Tooltip delayDuration={250}>
+                            <TooltipTrigger asChild>
+                              <span className="cursor-help inline-flex items-center gap-1">
+                                {formatCurrency(log.costUsd, currencyCode, 6)}
+                                {hasPriorityServiceTierSpecialSetting(log.specialSettings) && (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px] leading-tight px-1 bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950/30 dark:text-orange-300 dark:border-orange-800"
+                                    title={t("logs.billingDetails.fastPriority")}
+                                  >
+                                    {t("logs.billingDetails.fast")}
+                                  </Badge>
+                                )}
+                                {log.context1mApplied && (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px] leading-tight px-1 bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/30 dark:text-purple-300 dark:border-purple-800"
+                                  >
+                                    1M
+                                  </Badge>
+                                )}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent align="end" className="text-xs space-y-1 max-w-[300px]">
+                              {hasPriorityServiceTierSpecialSetting(log.specialSettings) && (
+                                <div className="text-orange-600 dark:text-orange-400 font-medium">
+                                  {t("logs.billingDetails.fastPriority")}
+                                </div>
+                              )}
+                              {log.context1mApplied && (
+                                <div className="text-purple-600 dark:text-purple-400 font-medium">
+                                  {t("logs.billingDetails.context1m")}
+                                </div>
+                              )}
+                              {pricingResolution && (
+                                <>
+                                  <div>
+                                    {t("logs.billingDetails.pricingProvider")}:{" "}
+                                    <span className="font-mono">
+                                      {pricingResolution.resolvedPricingProviderKey}
+                                    </span>
+                                  </div>
+                                  <div>{getPricingSourceLabel(pricingResolution.source)}</div>
+                                </>
+                              )}
+                              <div>
+                                {t("logs.billingDetails.input")}:{" "}
+                                {formatTokenAmount(log.inputTokens)} tokens
+                              </div>
+                              <div>
+                                {t("logs.billingDetails.output")}:{" "}
+                                {formatTokenAmount(log.outputTokens)} tokens
+                              </div>
+                              {(log.cacheCreation5mInputTokens ?? 0) > 0 && (
+                                <div>
+                                  {t("logs.billingDetails.cacheWrite5m")}:{" "}
+                                  {formatTokenAmount(log.cacheCreation5mInputTokens)} tokens (1.25x)
+                                </div>
+                              )}
+                              {(log.cacheCreation1hInputTokens ?? 0) > 0 && (
+                                <div>
+                                  {t("logs.billingDetails.cacheWrite1h")}:{" "}
+                                  {formatTokenAmount(log.cacheCreation1hInputTokens)} tokens (2x)
+                                </div>
+                              )}
+                              {(log.cacheReadInputTokens ?? 0) > 0 && (
+                                <div>
+                                  {t("logs.billingDetails.cacheRead")}:{" "}
+                                  {formatTokenAmount(log.cacheReadInputTokens)} tokens (0.1x)
+                                </div>
+                              )}
+                              {hasCostBadge && multiplier != null && (
+                                <div>
+                                  {t("logs.billingDetails.multiplier")}: {multiplier.toFixed(2)}x
+                                </div>
+                              )}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : (
+                        "-"
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs">
+                      {(() => {
+                        const rate = calculateOutputRate(
+                          log.outputTokens,
+                          log.durationMs,
+                          log.ttfbMs
+                        );
+                        const hideRate = shouldHideOutputRate(rate, log.durationMs, log.ttfbMs);
+                        const secondLine = [
+                          log.ttfbMs != null &&
+                            log.ttfbMs > 0 &&
+                            `TTFB ${formatDuration(log.ttfbMs)}`,
+                          rate !== null && !hideRate && `${rate.toFixed(0)} tok/s`,
+                        ]
+                          .filter(Boolean)
+                          .join(" | ");
+
+                        return (
+                          <TooltipProvider>
+                            <Tooltip delayDuration={250}>
+                              <TooltipTrigger asChild>
+                                <div className="flex flex-col items-end cursor-help">
+                                  <span>{formatDuration(log.durationMs)}</span>
+                                  {secondLine && (
+                                    <span className="text-muted-foreground text-[10px]">
+                                      {secondLine}
+                                    </span>
+                                  )}
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent align="end" className="text-xs space-y-1">
+                                <div>
+                                  {t("logs.details.performance.duration")}:{" "}
+                                  {formatDuration(log.durationMs)}
+                                </div>
+                                {log.ttfbMs != null && (
+                                  <div>
+                                    {t("logs.details.performance.ttfb")}:{" "}
+                                    {formatDuration(log.ttfbMs)}
+                                  </div>
+                                )}
+                                {rate !== null && !hideRate && (
+                                  <div>
+                                    {t("logs.details.performance.outputRate")}: {rate.toFixed(1)}{" "}
+                                    tok/s
+                                  </div>
+                                )}
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        );
+                      })()}
+                    </TableCell>
+                    <TableCell>
+                      <ErrorDetailsDialog
+                        statusCode={log.statusCode}
+                        errorMessage={log.errorMessage}
+                        providerChain={log.providerChain}
+                        sessionId={log.sessionId}
+                        requestSequence={log.requestSequence}
+                        blockedBy={log.blockedBy}
+                        blockedReason={log.blockedReason}
+                        originalModel={log.originalModel}
+                        currentModel={log.model}
+                        actualResponseModel={log.actualResponseModel}
+                        userAgent={log.userAgent}
+                        clientIp={log.clientIp}
+                        messagesCount={log.messagesCount}
+                        endpoint={log.endpoint}
+                        billingModelSource={billingModelSource}
+                        specialSettings={log.specialSettings}
+                        inputTokens={log.inputTokens}
+                        outputTokens={log.outputTokens}
+                        cacheCreationInputTokens={log.cacheCreationInputTokens}
+                        cacheCreation5mInputTokens={log.cacheCreation5mInputTokens}
+                        cacheCreation1hInputTokens={log.cacheCreation1hInputTokens}
+                        cacheReadInputTokens={log.cacheReadInputTokens}
+                        cacheTtlApplied={log.cacheTtlApplied}
+                        swapCacheTtlApplied={log.swapCacheTtlApplied}
+                        costUsd={log.costUsd}
+                        costMultiplier={log.costMultiplier}
+                        groupCostMultiplier={log.groupCostMultiplier}
+                        costBreakdown={log.costBreakdown}
+                        context1mApplied={log.context1mApplied}
+                        durationMs={log.durationMs}
+                        ttfbMs={log.ttfbMs}
+                        externalOpen={dialogState.logId === log.id ? true : undefined}
+                        onExternalOpenChange={(open) => {
+                          if (!open) setDialogState({ logId: null, scrollToRedirect: false });
+                        }}
+                        scrollToRedirect={
+                          dialogState.logId === log.id && dialogState.scrollToRedirect
+                        }
+                        initialTab={
+                          dialogState.logId === log.id ? dialogState.targetTab : undefined
+                        }
+                        initialExpandedChainIndex={
+                          dialogState.logId === log.id ? dialogState.expandedChainIndex : undefined
+                        }
+                      />
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
+      {/* 分页 */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-muted-foreground">
+            {t("logs.table.pagination", { total, page, totalPages })}
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onPageChange(page - 1)}
+              disabled={page === 1 || isPending}
+            >
+              {t("logs.table.prevPage")}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onPageChange(page + 1)}
+              disabled={page === totalPages || isPending}
+            >
+              {t("logs.table.nextPage")}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <IpDetailsDialog ip={ipDialogValue} open={ipDialogOpen} onOpenChange={setIpDialogOpen} />
+    </div>
+  );
+}

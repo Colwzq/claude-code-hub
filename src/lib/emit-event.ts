@@ -1,0 +1,84 @@
+/**
+ * 安全的事件触发辅助函数
+ *
+ * 此模块使用动态导入 event-emitter，确保在 Edge Runtime 中不会报错
+ * 适用于 Server Actions 和 Repository 层
+ */
+
+/**
+ * 触发 errorRulesUpdated 事件
+ */
+export async function emitErrorRulesUpdated(): Promise<void> {
+  if (typeof process !== "undefined" && process.env.NEXT_RUNTIME !== "edge") {
+    try {
+      const { eventEmitter } = await import("@/lib/event-emitter");
+      eventEmitter.emitErrorRulesUpdated();
+    } catch {
+      // 忽略导入错误
+    }
+
+    try {
+      const { CHANNEL_ERROR_RULES_UPDATED, publishCacheInvalidation } = await import(
+        "@/lib/redis/pubsub"
+      );
+      await publishCacheInvalidation(CHANNEL_ERROR_RULES_UPDATED);
+    } catch {
+      // 忽略导入错误
+    }
+  }
+}
+
+/**
+ * 触发 sensitiveWordsUpdated 事件
+ */
+export async function emitSensitiveWordsUpdated(): Promise<void> {
+  if (typeof process !== "undefined" && process.env.NEXT_RUNTIME !== "edge") {
+    try {
+      const { eventEmitter } = await import("@/lib/event-emitter");
+      eventEmitter.emitSensitiveWordsUpdated();
+    } catch {
+      // 忽略导入错误
+    }
+
+    try {
+      const { CHANNEL_SENSITIVE_WORDS_UPDATED, publishCacheInvalidation } = await import(
+        "@/lib/redis/pubsub"
+      );
+      await publishCacheInvalidation(CHANNEL_SENSITIVE_WORDS_UPDATED);
+    } catch {
+      // 忽略导入错误
+    }
+  }
+}
+
+/**
+ * 触发 requestFiltersUpdated 事件
+ */
+export async function emitRequestFiltersUpdated(): Promise<void> {
+  if (typeof process !== "undefined" && process.env.NEXT_RUNTIME !== "edge") {
+    let logger: typeof import("@/lib/logger").logger | undefined;
+    try {
+      ({ logger } = await import("@/lib/logger"));
+    } catch {
+      // 忽略导入错误 (silent degrade)
+    }
+
+    try {
+      const { eventEmitter } = await import("@/lib/event-emitter");
+      eventEmitter.emitRequestFiltersUpdated();
+      logger?.info?.("[emitRequestFiltersUpdated] Local event emitted");
+    } catch (error) {
+      logger?.warn?.("[emitRequestFiltersUpdated] Failed to emit local event", { error });
+    }
+
+    try {
+      const { CHANNEL_REQUEST_FILTERS_UPDATED, publishCacheInvalidation } = await import(
+        "@/lib/redis/pubsub"
+      );
+      await publishCacheInvalidation(CHANNEL_REQUEST_FILTERS_UPDATED);
+      logger?.info?.("[emitRequestFiltersUpdated] Redis pub/sub publish attempted");
+    } catch (error) {
+      logger?.warn?.("[emitRequestFiltersUpdated] Failed to publish to Redis", { error });
+    }
+  }
+}

@@ -1,0 +1,1831 @@
+/**
+ * ============================================================================
+ * Rate Limit Service - Redis Key Naming Conventions
+ * ============================================================================
+ *
+ * This service implements cost tracking using different Redis data structures
+ * based on the time window mode (fixed vs rolling). Understanding the key
+ * naming patterns is crucial for debugging and maintenance.
+ *
+ * ## Key Naming Patterns
+ *
+ * ### 1. Fixed Time Window Keys (STRING type)
+ *    Format: `{type}:{id}:cost_daily_{suffix}`
+ *    Example: `key:123:cost_daily_1800` (resets at 18:00)
+ *             `provider:456:cost_daily_0000` (resets at 00:00)
+ *
+ *    - Uses Redis STRING type with INCRBYFLOAT
+ *    - Suffix is the reset time without colon (HH:mm -> HHmm)
+ *    - TTL: Dynamic, calculated to the next reset time
+ *    - Use case: Custom daily reset times (e.g., 18:00, 09:30)
+ *
+ * ### 2. Rolling Window Keys (ZSET type)
+ *    Format: `{type}:{id}:cost_daily_rolling`
+ *    Example: `key:123:cost_daily_rolling`
+ *             `provider:456:cost_daily_rolling`
+ *
+ *    - Uses Redis ZSET type with Lua scripts
+ *    - No time suffix - always "rolling"
+ *    - TTL: Fixed 24 hours (86400 seconds)
+ *    - Use case: True rolling 24-hour window (past 24 hours from now)
+ *
+ * ### 3. Other Period Keys (STRING type)
+ *    Format: `{type}:{id}:cost_{period}`
+ *    Example: `key:123:cost_weekly` (Monday 00:00 reset)
+ *             `key:123:cost_monthly` (1st day 00:00 reset)
+ *             `key:123:cost_5h_rolling` (5-hour rolling, ZSET)
+ *
+ * ## Why Different Patterns?
+ *
+ * ### Fixed Mode (`cost_daily_{suffix}`)
+ * - **Problem**: Multiple users may have different daily reset times
+ * - **Solution**: Include reset time in key name to avoid conflicts
+ * - **Example**: User A resets at 18:00, User B resets at 00:00
+ *   - Key A: `key:1:cost_daily_1800` (TTL to next 18:00)
+ *   - Key B: `key:2:cost_daily_0000` (TTL to next 00:00)
+ *
+ * ### Rolling Mode (`cost_daily_rolling`)
+ * - **Problem**: Rolling windows don't have a fixed reset time
+ * - **Solution**: Use generic "rolling" suffix, no time needed
+ * - **Advantage**: Simpler key naming, consistent TTL (24h)
+ * - **Trade-off**: Requires ZSET + Lua script (more complex but precise)
+ *
+ * ## Data Structure Comparison
+ *
+ * | Mode    | Type   | Operations      | TTL Strategy        | Precision |
+ * |---------|--------|-----------------|---------------------|-----------|
+ * | Fixed   | STRING | INCRBYFLOAT     | Dynamic (to reset)  | Minute    |
+ * | Rolling | ZSET   | Lua + ZADD      | Fixed (24h)         | Millisec  |
+ *
+ * ## Related Files
+ * - Lua Scripts: src/lib/redis/lua-scripts.ts
+ * - Time Utils: src/lib/rate-limit/time-utils.ts
+ * - Documentation: CLAUDE.md (Redis Key Architecture section)
+ *
+ * ============================================================================
+ */
+
+import { logger } from "@/lib/logger";
+import { getRedisClient } from "@/lib/redis";
+import {
+  getGlobalActiveSessionsKey,
+  getKeyActiveSessionsKey,
+  getUserActiveSessionsKey,
+} from "@/lib/redis/active-session-keys";
+import {
+  CHECK_AND_TRACK_KEY_USER_SESSION,
+  CHECK_AND_TRACK_SESSION,
+  GET_COST_5H_ROLLING_WINDOW,
+  GET_COST_DAILY_ROLLING_WINDOW,
+  RELEASE_PROVIDER_SESSION,
+  TRACK_COST_5H_ROLLING_WINDOW,
+  TRACK_COST_DAILY_ROLLING_WINDOW,
+} from "@/lib/redis/lua-scripts";
+import { SessionTracker } from "@/lib/session-tracker";
+import { ERROR_CODES } from "@/lib/utils/error-messages";
+import {
+  sumKeyTotalCost,
+  sumProviderTotalCost,
+  sumUserCostInTimeRange,
+  sumUserTotalCost,
+} from "@/repository/statistics";
+import { clipStartByResetAt, resolveUser5hCostResetAt } from "./cost-reset-utils";
+import type { LeaseWindowType } from "./lease";
+import { type DecrementLeaseBudgetResult, LeaseService } from "./lease-service";
+import {
+  type DailyResetMode,
+  getResetAtFromTtlSeconds,
+  getTimeRangeForPeriodWithMode,
+  getTTLForPeriod,
+  getTTLForPeriodWithMode,
+  normalizeResetTime,
+} from "./time-utils";
+
+const SESSION_TTL_SECONDS = (() => {
+  const parsed = Number.parseInt(process.env.SESSION_TTL ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 300;
+})();
+const SESSION_TTL_MS = SESSION_TTL_SECONDS * 1000;
+
+interface CostLimit {
+  amount: number | null;
+  period: "5h" | "daily" | "weekly" | "monthly";
+  name: string;
+  resetTime?: string; // 自定义重置时间（仅 daily + fixed 模式使用，格式 "HH:mm"）
+  resetMode?: DailyResetMode; // 5h/daily 限额重置模式
+}
+
+/**
+ * 限流/配额服务：统一封装 Redis + DB 的限额检查与消费追踪。
+ *
+ * 设计约束：
+ * - Redis 不可用时默认 Fail Open，避免误伤正常请求（仍会在日志中记录）。
+ */
+export class RateLimitService {
+  private static readonly TRACK_FIXED_COST_WINDOW_LUA = `
+    local existing = redis.call("GET", KEYS[1])
+    if existing then
+      return redis.call("INCRBYFLOAT", KEYS[1], ARGV[1])
+    end
+
+    redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[2])
+    return tonumber(ARGV[1])
+  `;
+
+  // 使用 getter 实现懒加载，避免模块加载时立即连接 Redis（构建阶段触发）
+  private static get redis() {
+    return getRedisClient();
+  }
+
+  private static resolveDailyReset(resetTime?: string): { normalized: string; suffix: string } {
+    const normalized = normalizeResetTime(resetTime);
+    return { normalized, suffix: normalized.replace(":", "") };
+  }
+
+  private static get5hCostKey(
+    type: "key" | "provider" | "user",
+    id: number,
+    mode: DailyResetMode = "rolling"
+  ): string {
+    return `${type}:${id}:cost_5h_${mode}`;
+  }
+
+  private static async getFixed5hWindowState(
+    type: "key" | "provider" | "user",
+    id: number
+  ): Promise<{ current: number; resetAt: Date | null; exists: boolean }> {
+    const redis = RateLimitService.redis;
+    if (!redis || redis.status !== "ready") {
+      return { current: 0, resetAt: null, exists: false };
+    }
+
+    const key = RateLimitService.get5hCostKey(type, id, "fixed");
+    const [value, ttlSecondsRaw] = await Promise.all([redis.get(key), redis.ttl(key)]);
+
+    if (value === null) {
+      return { current: 0, resetAt: null, exists: false };
+    }
+
+    const parsed = Number.parseFloat(value || "0");
+    const ttlSeconds = typeof ttlSecondsRaw === "number" ? ttlSecondsRaw : Number(ttlSecondsRaw);
+    return {
+      current: Number.isFinite(parsed) ? parsed : 0,
+      resetAt: getResetAtFromTtlSeconds(ttlSeconds),
+      exists: true,
+    };
+  }
+
+  static async get5hWindowResetAt(
+    id: number,
+    type: "key" | "provider" | "user",
+    resetMode: DailyResetMode = "rolling"
+  ): Promise<Date | null> {
+    if (resetMode === "rolling") {
+      return null;
+    }
+    const state = await RateLimitService.getFixed5hWindowState(type, id);
+    return state.resetAt;
+  }
+
+  private static async trackFixedCostWindow(
+    key: string,
+    cost: number,
+    ttlSeconds: number
+  ): Promise<void> {
+    const redis = RateLimitService.redis;
+    if (!redis || redis.status !== "ready") return;
+
+    await redis.eval(
+      RateLimitService.TRACK_FIXED_COST_WINDOW_LUA,
+      1,
+      key,
+      cost.toString(),
+      ttlSeconds
+    );
+  }
+
+  private static async warmRollingCostZset(
+    key: string,
+    entries: Array<{ id: number; createdAt: Date; costUsd: number }>,
+    ttlSeconds: number
+  ): Promise<void> {
+    if (!RateLimitService.redis || RateLimitService.redis.status !== "ready") return;
+    if (entries.length === 0) return;
+
+    const pipeline = RateLimitService.redis.pipeline();
+
+    for (const entry of entries) {
+      const createdAtMs = entry.createdAt.getTime();
+      if (!Number.isFinite(createdAtMs)) continue;
+      if (!Number.isFinite(entry.costUsd) || entry.costUsd <= 0) continue;
+
+      pipeline.zadd(key, createdAtMs, `${createdAtMs}:${entry.id}:${entry.costUsd}`);
+    }
+
+    pipeline.expire(key, ttlSeconds);
+    await pipeline.exec();
+  }
+
+  /**
+   * 检查金额限制（Key、Provider 或 User）
+   * 优先使用 Redis，失败时降级到数据库查询（防止 Redis 清空后超支）
+   */
+  static async checkCostLimits(
+    id: number,
+    type: "key" | "provider" | "user",
+    limits: {
+      limit_5h_usd: number | null;
+      limit_5h_reset_mode?: DailyResetMode;
+      limit_daily_usd: number | null;
+      daily_reset_time?: string;
+      daily_reset_mode?: DailyResetMode;
+      limit_weekly_usd: number | null;
+      limit_monthly_usd: number | null;
+      cost_reset_at?: Date | null;
+      limit_5h_cost_reset_at?: Date | null;
+    }
+  ): Promise<{ allowed: boolean; reason?: string }> {
+    const normalizedDailyReset = normalizeResetTime(limits.daily_reset_time);
+    const limit5hResetMode = limits.limit_5h_reset_mode ?? "rolling";
+    const dailyResetMode = limits.daily_reset_mode ?? "fixed";
+    const costLimits: CostLimit[] = [
+      {
+        amount: limits.limit_5h_usd,
+        period: "5h",
+        name: "5小时",
+        resetMode: limit5hResetMode,
+      },
+      {
+        amount: limits.limit_daily_usd,
+        period: "daily",
+        name: "每日",
+        resetTime: normalizedDailyReset,
+        resetMode: dailyResetMode,
+      },
+      { amount: limits.limit_weekly_usd, period: "weekly", name: "周" },
+      { amount: limits.limit_monthly_usd, period: "monthly", name: "月" },
+    ];
+
+    try {
+      // Fast Path: Redis 查询
+      if (RateLimitService.redis && RateLimitService.redis.status === "ready") {
+        const now = Date.now();
+        const window5h = 5 * 60 * 60 * 1000; // 5 hours in ms
+
+        for (const limit of costLimits) {
+          if (!limit.amount || limit.amount <= 0) continue;
+
+          let current = 0;
+
+          // 5h 根据 fixed/rolling 模式走不同的 Redis 表示
+          if (limit.period === "5h" && limit.resetMode === "fixed") {
+            const fixedWindowState = await RateLimitService.getFixed5hWindowState(type, id);
+            current = fixedWindowState.current;
+          } else if (limit.period === "5h") {
+            try {
+              const key = RateLimitService.get5hCostKey(type, id, "rolling");
+              const result = (await RateLimitService.redis.eval(
+                GET_COST_5H_ROLLING_WINDOW,
+                1, // KEYS count
+                key, // KEYS[1]
+                now.toString(), // ARGV[1]: now
+                window5h.toString() // ARGV[2]: window
+              )) as string;
+
+              current = parseFloat(result || "0");
+
+              // Cache Miss 检测：如果返回 0 但 Redis 中没有 key，从数据库恢复
+              if (current === 0) {
+                const exists = await RateLimitService.redis.exists(key);
+                if (!exists) {
+                  logger.info(
+                    `[RateLimit] Cache miss for ${type}:${id}:cost_5h, querying database`
+                  );
+                  return await RateLimitService.checkCostLimitsFromDatabase(
+                    id,
+                    type,
+                    costLimits,
+                    limits.cost_reset_at,
+                    limits.limit_5h_cost_reset_at
+                  );
+                }
+              }
+            } catch (error) {
+              logger.error(
+                "[RateLimit] 5h rolling window query failed, fallback to database:",
+                error
+              );
+              return await RateLimitService.checkCostLimitsFromDatabase(
+                id,
+                type,
+                costLimits,
+                limits.cost_reset_at,
+                limits.limit_5h_cost_reset_at
+              );
+            }
+          } else if (limit.period === "daily" && limit.resetMode === "rolling") {
+            // daily 滚动窗口：使用 ZSET + Lua 脚本
+            try {
+              const key = `${type}:${id}:cost_daily_rolling`;
+              const window24h = 24 * 60 * 60 * 1000;
+              const result = (await RateLimitService.redis.eval(
+                GET_COST_DAILY_ROLLING_WINDOW,
+                1,
+                key,
+                now.toString(),
+                window24h.toString()
+              )) as string;
+
+              current = parseFloat(result || "0");
+
+              // Cache Miss 检测
+              if (current === 0) {
+                const exists = await RateLimitService.redis.exists(key);
+                if (!exists) {
+                  logger.info(
+                    `[RateLimit] Cache miss for ${type}:${id}:cost_daily_rolling, querying database`
+                  );
+                  return await RateLimitService.checkCostLimitsFromDatabase(
+                    id,
+                    type,
+                    costLimits,
+                    limits.cost_reset_at,
+                    limits.limit_5h_cost_reset_at
+                  );
+                }
+              }
+            } catch (error) {
+              logger.error(
+                "[RateLimit] Daily rolling window query failed, fallback to database:",
+                error
+              );
+              return await RateLimitService.checkCostLimitsFromDatabase(
+                id,
+                type,
+                costLimits,
+                limits.cost_reset_at,
+                limits.limit_5h_cost_reset_at
+              );
+            }
+          } else {
+            // daily fixed/周/月使用普通 GET
+            const { suffix } = RateLimitService.resolveDailyReset(limit.resetTime);
+            const periodKey = limit.period === "daily" ? `${limit.period}_${suffix}` : limit.period;
+            const value = await RateLimitService.redis.get(`${type}:${id}:cost_${periodKey}`);
+
+            // Cache Miss 检测
+            if (value === null && limit.amount > 0) {
+              logger.info(
+                `[RateLimit] Cache miss for ${type}:${id}:cost_${periodKey}, querying database`
+              );
+              return await RateLimitService.checkCostLimitsFromDatabase(
+                id,
+                type,
+                costLimits,
+                limits.cost_reset_at,
+                limits.limit_5h_cost_reset_at
+              );
+            }
+
+            current = parseFloat((value as string) || "0");
+          }
+
+          if (current >= limit.amount) {
+            const typeName = type === "key" ? "Key" : type === "provider" ? "供应商" : "User";
+            return {
+              allowed: false,
+              reason: `${typeName} ${limit.name}消费上限已达到（${current.toFixed(4)}/${limit.amount}）`,
+            };
+          }
+        }
+
+        return { allowed: true };
+      }
+
+      // Slow Path: Redis 不可用，降级到数据库
+      logger.warn(`[RateLimit] Redis unavailable, checking ${type} cost limits from database`);
+      return await RateLimitService.checkCostLimitsFromDatabase(
+        id,
+        type,
+        costLimits,
+        limits.cost_reset_at,
+        limits.limit_5h_cost_reset_at
+      );
+    } catch (error) {
+      logger.error("[RateLimit] Check failed, fallback to database:", error);
+      return await RateLimitService.checkCostLimitsFromDatabase(
+        id,
+        type,
+        costLimits,
+        limits.cost_reset_at,
+        limits.limit_5h_cost_reset_at
+      );
+    }
+  }
+
+  /**
+   * 检查总消费限额（带 Redis 缓存优化）
+   * 使用 5 分钟 TTL 缓存减少数据库查询频率
+   */
+  static async checkTotalCostLimit(
+    entityId: number,
+    entityType: "key" | "user" | "provider",
+    limitTotalUsd: number | null,
+    options?: { keyHash?: string; resetAt?: Date | null }
+  ): Promise<{ allowed: boolean; current?: number; reason?: string }> {
+    if (limitTotalUsd === null || limitTotalUsd === undefined || limitTotalUsd <= 0) {
+      return { allowed: true };
+    }
+
+    try {
+      let current = 0;
+      const cacheKey = (() => {
+        const resetAtSuffix =
+          options?.resetAt instanceof Date && !Number.isNaN(options.resetAt.getTime())
+            ? `:${options.resetAt.getTime()}`
+            : "";
+        if (entityType === "key") {
+          return `total_cost:key:${options?.keyHash}${resetAtSuffix}`;
+        }
+        if (entityType === "user") {
+          return `total_cost:user:${entityId}${resetAtSuffix}`;
+        }
+        const resetAtMs = resetAtSuffix || ":none";
+        return `total_cost:provider:${entityId}${resetAtMs}`;
+      })();
+      const cacheTtl = 300; // 5 minutes
+
+      // 尝试从 Redis 缓存获取
+      const redis = RateLimitService.redis;
+      if (redis && redis.status === "ready") {
+        try {
+          const cached = await redis.get(cacheKey);
+          if (cached !== null) {
+            current = Number(cached);
+          } else {
+            // 缓存未命中，查询数据库
+            if (entityType === "key") {
+              if (!options?.keyHash) {
+                logger.warn("[RateLimit] Missing key hash for total cost check, skip enforcement");
+                return { allowed: true };
+              }
+              current = await sumKeyTotalCost(options.keyHash, Infinity, options?.resetAt);
+            } else if (entityType === "user") {
+              current = await sumUserTotalCost(entityId, Infinity, options?.resetAt);
+            } else {
+              current = await sumProviderTotalCost(entityId, options?.resetAt ?? null);
+            }
+            // 异步写入缓存，不阻塞请求
+            redis.setex(cacheKey, cacheTtl, current.toString()).catch((err) => {
+              logger.warn("[RateLimit] Failed to cache total cost:", err);
+            });
+          }
+        } catch (redisError) {
+          // Redis 读取失败，降级到数据库查询
+          logger.warn("[RateLimit] Redis cache read failed, falling back to database:", redisError);
+          if (entityType === "key") {
+            if (!options?.keyHash) {
+              return { allowed: true };
+            }
+            current = await sumKeyTotalCost(options.keyHash, Infinity, options?.resetAt);
+          } else if (entityType === "user") {
+            current = await sumUserTotalCost(entityId, Infinity, options?.resetAt);
+          } else {
+            current = await sumProviderTotalCost(entityId, options?.resetAt ?? null);
+          }
+        }
+      } else {
+        // Redis 不可用，直接查询数据库
+        if (entityType === "key") {
+          if (!options?.keyHash) {
+            logger.warn("[RateLimit] Missing key hash for total cost check, skip enforcement");
+            return { allowed: true };
+          }
+          current = await sumKeyTotalCost(options.keyHash, Infinity, options?.resetAt);
+        } else if (entityType === "user") {
+          current = await sumUserTotalCost(entityId, Infinity, options?.resetAt);
+        } else {
+          current = await sumProviderTotalCost(entityId, options?.resetAt ?? null);
+        }
+      }
+
+      if (current >= limitTotalUsd) {
+        const typeName = entityType === "key" ? "Key" : entityType === "user" ? "User" : "供应商";
+        return {
+          allowed: false,
+          current,
+          reason: `${typeName} total spending limit reached (${current.toFixed(4)}/${limitTotalUsd})`,
+        };
+      }
+
+      return { allowed: true, current };
+    } catch (error) {
+      logger.error("[RateLimit] Total cost limit check failed:", error);
+      return { allowed: true }; // fail open
+    }
+  }
+
+  /**
+   * 从数据库检查金额限制（降级路径）
+   */
+  private static async checkCostLimitsFromDatabase(
+    id: number,
+    type: "key" | "provider" | "user",
+    costLimits: CostLimit[],
+    costResetAt?: Date | null,
+    limit5hCostResetAt?: Date | null
+  ): Promise<{ allowed: boolean; reason?: string }> {
+    const {
+      findKeyCostEntriesInTimeRange,
+      findProviderCostEntriesInTimeRange,
+      findUserCostEntriesInTimeRange,
+      sumKeyCostInTimeRange,
+      sumProviderCostInTimeRange,
+      sumUserCostInTimeRange,
+    } = await import("@/repository/statistics");
+
+    for (const limit of costLimits) {
+      if (!limit.amount || limit.amount <= 0) continue;
+
+      if (limit.period === "5h" && limit.resetMode === "fixed") {
+        const fixedWindowState = await RateLimitService.getFixed5hWindowState(type, id);
+        if (fixedWindowState.current >= limit.amount) {
+          const typeName = type === "key" ? "Key" : type === "provider" ? "供应商" : "User";
+          return {
+            allowed: false,
+            reason: `${typeName} ${limit.name}消费上限已达到（${fixedWindowState.current.toFixed(4)}/${limit.amount}）`,
+          };
+        }
+        continue;
+      }
+
+      // 计算时间范围（使用支持模式的时间工具函数）
+      const { startTime, endTime } = await getTimeRangeForPeriodWithMode(
+        limit.period,
+        limit.resetTime,
+        limit.resetMode
+      );
+
+      // Clip startTime forward if costResetAt is more recent
+      // 仅 rolling 5h 需要使用 later-of(costResetAt, limit5hCostResetAt)；
+      // 其它窗口继续沿用 full reset 边界，避免 5h-only reset 污染更长窗口。
+      const effectiveResetAt =
+        type === "user" && limit.period === "5h" && limit.resetMode !== "fixed"
+          ? resolveUser5hCostResetAt(costResetAt, limit5hCostResetAt)
+          : costResetAt;
+      const effectiveStartTime = clipStartByResetAt(startTime, effectiveResetAt);
+
+      // 查询数据库
+      let current = 0;
+      let costEntries: Array<{
+        id: number;
+        createdAt: Date;
+        costUsd: number;
+      }> | null = null;
+
+      const isRollingWindow =
+        limit.period === "5h" || (limit.period === "daily" && limit.resetMode === "rolling");
+
+      if (isRollingWindow) {
+        switch (type) {
+          case "key":
+            costEntries = await findKeyCostEntriesInTimeRange(id, effectiveStartTime, endTime);
+            break;
+          case "provider":
+            costEntries = await findProviderCostEntriesInTimeRange(id, effectiveStartTime, endTime);
+            break;
+          case "user":
+            costEntries = await findUserCostEntriesInTimeRange(id, effectiveStartTime, endTime);
+            break;
+          default:
+            costEntries = [];
+        }
+
+        current = costEntries.reduce((sum, row) => sum + row.costUsd, 0);
+      } else {
+        switch (type) {
+          case "key":
+            current = await sumKeyCostInTimeRange(id, effectiveStartTime, endTime);
+            break;
+          case "provider":
+            current = await sumProviderCostInTimeRange(id, effectiveStartTime, endTime);
+            break;
+          case "user":
+            current = await sumUserCostInTimeRange(id, effectiveStartTime, endTime);
+            break;
+          default:
+            current = 0;
+        }
+      }
+
+      // Cache Warming: 写回 Redis
+      if (RateLimitService.redis && RateLimitService.redis.status === "ready") {
+        try {
+          if (limit.period === "5h") {
+            // 5h 滚动窗口：Redis 恢复时必须按原始时间戳重建 ZSET，避免窗口边界偏差/重复累计
+            if (costEntries && costEntries.length > 0) {
+              const key = RateLimitService.get5hCostKey(type, id, "rolling");
+              await RateLimitService.warmRollingCostZset(key, costEntries, 21600);
+              logger.info(
+                `[RateLimit] Cache warmed for ${key}, value=${current} (rolling window, rebuilt)`
+              );
+            }
+          } else if (limit.period === "daily" && limit.resetMode === "rolling") {
+            // daily 滚动窗口：使用 ZSET + Lua 脚本
+            if (costEntries && costEntries.length > 0) {
+              const key = `${type}:${id}:cost_daily_rolling`;
+              await RateLimitService.warmRollingCostZset(key, costEntries, 90000);
+              logger.info(
+                `[RateLimit] Cache warmed for ${key}, value=${current} (daily rolling window, rebuilt)`
+              );
+            }
+          } else {
+            // daily fixed/周/月固定窗口：使用 STRING + 动态 TTL
+            const { normalized, suffix } = RateLimitService.resolveDailyReset(limit.resetTime);
+            const ttl = await getTTLForPeriodWithMode(limit.period, normalized, limit.resetMode);
+            const periodKey = limit.period === "daily" ? `${limit.period}_${suffix}` : limit.period;
+            await RateLimitService.redis.set(
+              `${type}:${id}:cost_${periodKey}`,
+              current.toString(),
+              "EX",
+              ttl
+            );
+            logger.info(
+              `[RateLimit] Cache warmed for ${type}:${id}:cost_${periodKey}, value=${current}, ttl=${ttl}s`
+            );
+          }
+        } catch (error) {
+          logger.error("[RateLimit] Failed to warm cache:", error);
+        }
+      }
+
+      if (current >= limit.amount) {
+        const typeName = type === "key" ? "Key" : type === "provider" ? "供应商" : "User";
+        return {
+          allowed: false,
+          reason: `${typeName} ${limit.name}消费上限已达到（${current.toFixed(4)}/${limit.amount}）`,
+        };
+      }
+    }
+
+    return { allowed: true };
+  }
+
+  /**
+   * 检查并发 Session 限制（仅检查，不追踪）
+   *
+   * 注意：此方法仅用于非供应商级别的限流检查（如 key / user 级）
+   * 供应商级别请使用 checkAndTrackProviderSession 保证原子性
+   */
+  static async checkSessionLimit(
+    id: number,
+    type: "key" | "provider" | "user",
+    limit: number
+  ): Promise<{ allowed: boolean; reason?: string }> {
+    if (limit <= 0) {
+      return { allowed: true };
+    }
+
+    try {
+      // 使用 SessionTracker 的统一计数逻辑
+      const count =
+        type === "key"
+          ? await SessionTracker.getKeySessionCount(id)
+          : type === "provider"
+            ? await SessionTracker.getProviderSessionCount(id)
+            : await SessionTracker.getUserSessionCount(id);
+
+      if (count >= limit) {
+        const typeLabel = type === "key" ? "Key" : type === "provider" ? "供应商" : "User";
+        return {
+          allowed: false,
+          reason: `${typeLabel}并发 Session 上限已达到（${count}/${limit}）`,
+        };
+      }
+
+      return { allowed: true };
+    } catch (error) {
+      logger.error("[RateLimit] Session check failed:", error);
+      return { allowed: true }; // Fail Open
+    }
+  }
+
+  /**
+   * 原子性检查并追踪 Key/User 并发 Session（解决竞态条件）
+   *
+   * 与 checkSessionLimit 的区别：
+   * - checkSessionLimit：只读检查（可能被并发击穿），且无法区分“新 session”与“已存在 session”
+   * - 本方法：使用 Lua 脚本原子性完成“检查 + 追踪”，并允许已存在的 session 在达到上限时继续请求
+   *
+   * 注意：
+   * - keyLimit/userLimit 均 <=0 时表示无限制，直接放行且不追踪（由 SessionTracker.refreshSession 等路径负责观测）
+   * - Redis 不可用时 Fail Open
+   */
+  static async checkAndTrackKeyUserSession(
+    keyId: number,
+    userId: number,
+    sessionId: string,
+    keyLimit: number,
+    userLimit: number
+  ): Promise<{
+    allowed: boolean;
+    keyCount: number;
+    userCount: number;
+    trackedKey: boolean;
+    trackedUser: boolean;
+    rejectedBy?: "key" | "user";
+    reasonCode?: string;
+    reasonParams?: Record<string, string | number>;
+  }> {
+    if (keyLimit <= 0 && userLimit <= 0) {
+      return { allowed: true, keyCount: 0, userCount: 0, trackedKey: false, trackedUser: false };
+    }
+
+    if (!RateLimitService.redis || RateLimitService.redis.status !== "ready") {
+      logger.warn("[RateLimit] Redis not ready, Fail Open");
+      return { allowed: true, keyCount: 0, userCount: 0, trackedKey: false, trackedUser: false };
+    }
+
+    try {
+      const globalKey = getGlobalActiveSessionsKey();
+      const keyKey = getKeyActiveSessionsKey(keyId);
+      const userKey = getUserActiveSessionsKey(userId);
+      const now = Date.now();
+
+      const result = (await RateLimitService.redis.eval(
+        CHECK_AND_TRACK_KEY_USER_SESSION,
+        3, // KEYS count
+        globalKey, // KEYS[1]
+        keyKey, // KEYS[2]
+        userKey, // KEYS[3]
+        sessionId, // ARGV[1]
+        keyLimit.toString(), // ARGV[2]
+        userLimit.toString(), // ARGV[3]
+        now.toString(), // ARGV[4]
+        SESSION_TTL_MS.toString() // ARGV[5]
+      )) as [number, number, number, number, number, number];
+
+      const [allowed, rejectedBy, keyCount, keyTracked, userCount, userTracked] = result;
+
+      if (allowed === 0) {
+        const rejectTarget: "key" | "user" = rejectedBy === 1 ? "key" : "user";
+        const limit = rejectTarget === "key" ? keyLimit : userLimit;
+        const count = rejectTarget === "key" ? keyCount : userCount;
+
+        return {
+          allowed: false,
+          keyCount,
+          userCount,
+          trackedKey: false,
+          trackedUser: false,
+          rejectedBy: rejectTarget,
+          reasonCode: ERROR_CODES.RATE_LIMIT_CONCURRENT_SESSIONS_EXCEEDED,
+          reasonParams: { current: count, limit, target: rejectTarget },
+        };
+      }
+
+      return {
+        allowed: true,
+        keyCount,
+        userCount,
+        trackedKey: keyTracked === 1,
+        trackedUser: userTracked === 1,
+      };
+    } catch (error) {
+      logger.error("[RateLimit] Key/User session check+track failed:", error);
+      return { allowed: true, keyCount: 0, userCount: 0, trackedKey: false, trackedUser: false };
+    }
+  }
+
+  /**
+   * 原子性检查并追踪供应商 Session（解决竞态条件）
+   *
+   * 使用 Lua 脚本保证"检查 + 追踪"的原子性，防止并发请求同时通过限制检查
+   *
+   * @param providerId - Provider ID
+   * @param sessionId - Session ID
+   * @param limit - 并发限制
+   * @returns { allowed, count, tracked, referenced } - 是否允许、当前并发数、是否新追踪、是否获得释放引用
+   */
+  static async checkAndTrackProviderSession(
+    providerId: number,
+    sessionId: string,
+    limit: number
+  ): Promise<{
+    allowed: boolean;
+    count: number;
+    tracked: boolean;
+    referenced: boolean;
+    reason?: string;
+  }> {
+    if (limit <= 0) {
+      return { allowed: true, count: 0, tracked: false, referenced: false };
+    }
+
+    if (!RateLimitService.redis || RateLimitService.redis.status !== "ready") {
+      logger.warn("[RateLimit] Redis not ready, Fail Open");
+      return { allowed: true, count: 0, tracked: false, referenced: false };
+    }
+
+    try {
+      const key = `provider:${providerId}:active_sessions`;
+      const refKey = `provider:${providerId}:active_session_refs`;
+      const now = Date.now();
+
+      const result = (await RateLimitService.redis.eval(
+        CHECK_AND_TRACK_SESSION,
+        2, // KEYS count
+        key, // KEYS[1]
+        refKey, // KEYS[2]
+        sessionId, // ARGV[1]
+        limit.toString(), // ARGV[2]
+        now.toString(), // ARGV[3]
+        SESSION_TTL_MS.toString() // ARGV[4]
+      )) as [number, number, number, number];
+
+      const [allowed, count, tracked, referenced] = result;
+
+      if (allowed === 0) {
+        return {
+          allowed: false,
+          count,
+          tracked: false,
+          referenced: false,
+          reason: `供应商并发 Session 上限已达到（${count}/${limit}）`,
+        };
+      }
+
+      return {
+        allowed: true,
+        count,
+        tracked: tracked === 1, // Lua 返回 1 表示新追踪，0 表示已存在
+        referenced: referenced === 1,
+      };
+    } catch (error) {
+      logger.error("[RateLimit] Atomic check-and-track failed:", error);
+      return { allowed: true, count: 0, tracked: false, referenced: false }; // Fail Open
+    }
+  }
+
+  /**
+   * Release a provider-level active session when a selected provider is abandoned.
+   *
+   * Provider concurrency is tracked before forwarding so fallback decisions can be atomic.
+   * If the provider later fails, the session must be removed immediately instead of waiting
+   * for TTL cleanup; otherwise outage storms inflate provider active_sessions ZSETs.
+   */
+  static async releaseProviderSession(providerId: number, sessionId: string): Promise<void> {
+    if (!Number.isInteger(providerId) || providerId <= 0 || sessionId.trim().length === 0) {
+      return;
+    }
+
+    const redis = RateLimitService.redis;
+    if (!redis || redis.status !== "ready") {
+      return;
+    }
+
+    const key = `provider:${providerId}:active_sessions`;
+    const refKey = `provider:${providerId}:active_session_refs`;
+    try {
+      const [removed, remainingRefs] = (await redis.eval(
+        RELEASE_PROVIDER_SESSION,
+        2,
+        key,
+        refKey,
+        sessionId
+      )) as [number, number];
+      logger.debug("[RateLimit] Released provider session", {
+        providerId,
+        sessionId,
+        removed,
+        remainingRefs,
+      });
+    } catch (error) {
+      logger.error("[RateLimit] Failed to release provider session", {
+        providerId,
+        sessionId,
+        error,
+      });
+    }
+  }
+
+  /**
+   * 累加消费（请求结束后调用）
+   * 5h 使用滚动窗口（ZSET），daily 根据模式选择滚动/固定窗口，周/月使用固定窗口（STRING）
+   */
+  static async trackCost(
+    keyId: number,
+    providerId: number,
+    _sessionId: string,
+    cost: number,
+    options?: {
+      userId?: number;
+      key5hResetMode?: DailyResetMode;
+      keyResetTime?: string;
+      keyResetMode?: DailyResetMode;
+      provider5hResetMode?: DailyResetMode;
+      providerResetTime?: string;
+      providerResetMode?: DailyResetMode;
+      user5hResetMode?: DailyResetMode;
+      requestId?: number;
+      createdAtMs?: number;
+    }
+  ): Promise<void> {
+    if (!RateLimitService.redis || cost <= 0) return;
+
+    try {
+      const keyDailyReset = RateLimitService.resolveDailyReset(options?.keyResetTime);
+      const providerDailyReset = RateLimitService.resolveDailyReset(options?.providerResetTime);
+      const key5hMode = options?.key5hResetMode ?? "rolling";
+      const keyDailyMode = options?.keyResetMode ?? "fixed";
+      const provider5hMode = options?.provider5hResetMode ?? "rolling";
+      const providerDailyMode = options?.providerResetMode ?? "fixed";
+      const user5hMode = options?.user5hResetMode ?? "rolling";
+      const now = options?.createdAtMs ?? Date.now();
+      const requestId = options?.requestId != null ? String(options.requestId) : "";
+      const window5h = 5 * 60 * 60 * 1000; // 5 hours in ms
+      const window24h = 24 * 60 * 60 * 1000; // 24 hours in ms
+
+      // 计算动态 TTL（daily/周/月）
+      const ttlDailyKey = await getTTLForPeriodWithMode(
+        "daily",
+        keyDailyReset.normalized,
+        keyDailyMode
+      );
+      const ttlDailyProvider =
+        keyDailyReset.normalized === providerDailyReset.normalized &&
+        keyDailyMode === providerDailyMode
+          ? ttlDailyKey
+          : await getTTLForPeriodWithMode(
+              "daily",
+              providerDailyReset.normalized,
+              providerDailyMode
+            );
+      const ttlWeekly = await getTTLForPeriod("weekly");
+      const ttlMonthly = await getTTLForPeriod("monthly");
+
+      // 1. 5h 窗口：rolling 使用 ZSET，fixed 仅在首个成功记账时创建 TTL 窗口
+      if (key5hMode === "rolling") {
+        await RateLimitService.redis.eval(
+          TRACK_COST_5H_ROLLING_WINDOW,
+          1, // KEYS count
+          RateLimitService.get5hCostKey("key", keyId, "rolling"), // KEYS[1]
+          cost.toString(), // ARGV[1]: cost
+          now.toString(), // ARGV[2]: now
+          window5h.toString(), // ARGV[3]: window
+          requestId // ARGV[4]: request_id (optional)
+        );
+      } else {
+        await RateLimitService.trackFixedCostWindow(
+          RateLimitService.get5hCostKey("key", keyId, "fixed"),
+          cost,
+          5 * 3600
+        );
+      }
+
+      if (provider5hMode === "rolling") {
+        await RateLimitService.redis.eval(
+          TRACK_COST_5H_ROLLING_WINDOW,
+          1,
+          RateLimitService.get5hCostKey("provider", providerId, "rolling"),
+          cost.toString(),
+          now.toString(),
+          window5h.toString(),
+          requestId
+        );
+      } else {
+        await RateLimitService.trackFixedCostWindow(
+          RateLimitService.get5hCostKey("provider", providerId, "fixed"),
+          cost,
+          5 * 3600
+        );
+      }
+
+      if (options?.userId != null) {
+        if (user5hMode === "rolling") {
+          await RateLimitService.redis.eval(
+            TRACK_COST_5H_ROLLING_WINDOW,
+            1,
+            RateLimitService.get5hCostKey("user", options.userId, "rolling"),
+            cost.toString(),
+            now.toString(),
+            window5h.toString(),
+            requestId
+          );
+        } else {
+          await RateLimitService.trackFixedCostWindow(
+            RateLimitService.get5hCostKey("user", options.userId, "fixed"),
+            cost,
+            5 * 3600
+          );
+        }
+      }
+
+      // 2. daily 滚动窗口：使用 Lua 脚本（ZSET）
+      if (keyDailyMode === "rolling") {
+        await RateLimitService.redis.eval(
+          TRACK_COST_DAILY_ROLLING_WINDOW,
+          1,
+          `key:${keyId}:cost_daily_rolling`,
+          cost.toString(),
+          now.toString(),
+          window24h.toString(),
+          requestId
+        );
+      }
+
+      if (providerDailyMode === "rolling") {
+        await RateLimitService.redis.eval(
+          TRACK_COST_DAILY_ROLLING_WINDOW,
+          1,
+          `provider:${providerId}:cost_daily_rolling`,
+          cost.toString(),
+          now.toString(),
+          window24h.toString(),
+          requestId
+        );
+      }
+
+      // 3. daily fixed/周/月固定窗口：使用 STRING + 动态 TTL
+      const pipeline = RateLimitService.redis.pipeline();
+
+      // Key 的 daily fixed/周/月消费
+      if (keyDailyMode === "fixed") {
+        const keyDailyKey = `key:${keyId}:cost_daily_${keyDailyReset.suffix}`;
+        pipeline.incrbyfloat(keyDailyKey, cost);
+        pipeline.expire(keyDailyKey, ttlDailyKey);
+      }
+
+      pipeline.incrbyfloat(`key:${keyId}:cost_weekly`, cost);
+      pipeline.expire(`key:${keyId}:cost_weekly`, ttlWeekly);
+
+      pipeline.incrbyfloat(`key:${keyId}:cost_monthly`, cost);
+      pipeline.expire(`key:${keyId}:cost_monthly`, ttlMonthly);
+
+      // Provider 的 daily fixed/周/月消费
+      if (providerDailyMode === "fixed") {
+        const providerDailyKey = `provider:${providerId}:cost_daily_${providerDailyReset.suffix}`;
+        pipeline.incrbyfloat(providerDailyKey, cost);
+        pipeline.expire(providerDailyKey, ttlDailyProvider);
+      }
+
+      pipeline.incrbyfloat(`provider:${providerId}:cost_weekly`, cost);
+      pipeline.expire(`provider:${providerId}:cost_weekly`, ttlWeekly);
+
+      pipeline.incrbyfloat(`provider:${providerId}:cost_monthly`, cost);
+      pipeline.expire(`provider:${providerId}:cost_monthly`, ttlMonthly);
+
+      await pipeline.exec();
+
+      logger.debug(`[RateLimit] Tracked cost: key=${keyId}, provider=${providerId}, cost=${cost}`);
+    } catch (error) {
+      logger.error("[RateLimit] Track cost failed:", error);
+      // 不抛出错误，静默失败
+    }
+  }
+
+  /**
+   * 获取当前消费（用于响应头和前端展示）
+   * 优先使用 Redis，失败时降级到数据库查询
+   */
+  static async getCurrentCost(
+    id: number,
+    type: "key" | "provider" | "user",
+    period: "5h" | "daily" | "weekly" | "monthly",
+    resetTime = "00:00",
+    resetMode?: DailyResetMode,
+    options?: {
+      costResetAt?: Date | null;
+      limit5hCostResetAt?: Date | null;
+    }
+  ): Promise<number> {
+    try {
+      const effectiveResetMode = resetMode ?? (period === "5h" ? "rolling" : "fixed");
+      const dailyResetInfo = RateLimitService.resolveDailyReset(resetTime);
+      // Fast Path: Redis 查询
+      if (RateLimitService.redis && RateLimitService.redis.status === "ready") {
+        let current = 0;
+
+        // 5h 根据模式选择 fixed/rolling
+        if (period === "5h" && effectiveResetMode === "fixed") {
+          const fixedWindowState = await RateLimitService.getFixed5hWindowState(type, id);
+          return fixedWindowState.current;
+        } else if (period === "5h") {
+          const now = Date.now();
+          const window5h = 5 * 60 * 60 * 1000;
+          const key = RateLimitService.get5hCostKey(type, id, "rolling");
+
+          const result = (await RateLimitService.redis.eval(
+            GET_COST_5H_ROLLING_WINDOW,
+            1,
+            key,
+            now.toString(),
+            window5h.toString()
+          )) as string;
+
+          current = parseFloat(result || "0");
+
+          // Cache Hit
+          if (current > 0) {
+            return current;
+          }
+
+          // Cache Miss 检测：如果返回 0 但 Redis 中没有 key，从数据库恢复
+          const exists = await RateLimitService.redis.exists(key);
+          if (!exists) {
+            logger.info(`[RateLimit] Cache miss for ${type}:${id}:cost_5h, querying database`);
+          } else {
+            // Key 存在但值为 0，说明真的是 0
+            return 0;
+          }
+        } else if (period === "daily" && effectiveResetMode === "rolling") {
+          // daily 滚动窗口：使用 ZSET + Lua 脚本
+          const now = Date.now();
+          const window24h = 24 * 60 * 60 * 1000;
+          const key = `${type}:${id}:cost_daily_rolling`;
+
+          const result = (await RateLimitService.redis.eval(
+            GET_COST_DAILY_ROLLING_WINDOW,
+            1,
+            key,
+            now.toString(),
+            window24h.toString()
+          )) as string;
+
+          current = parseFloat(result || "0");
+
+          // Cache Hit
+          if (current > 0) {
+            return current;
+          }
+
+          // Cache Miss 检测
+          const exists = await RateLimitService.redis.exists(key);
+          if (!exists) {
+            logger.info(
+              `[RateLimit] Cache miss for ${type}:${id}:cost_daily_rolling, querying database`
+            );
+          } else {
+            return 0;
+          }
+        } else {
+          // daily fixed/周/月使用普通 GET
+          const redisKey = period === "daily" ? `${period}_${dailyResetInfo.suffix}` : period;
+          const value = await RateLimitService.redis.get(`${type}:${id}:cost_${redisKey}`);
+
+          // Cache Hit
+          if (value !== null) {
+            return parseFloat(value || "0");
+          }
+
+          // Cache Miss: 从数据库恢复
+          logger.info(
+            `[RateLimit] Cache miss for ${type}:${id}:cost_${redisKey}, querying database`
+          );
+        }
+      } else {
+        logger.warn(`[RateLimit] Redis unavailable, querying database for ${type} cost`);
+      }
+
+      // Slow Path: 数据库查询
+      if (period === "5h" && effectiveResetMode === "fixed") {
+        return 0;
+      }
+
+      const {
+        findKeyCostEntriesInTimeRange,
+        findProviderCostEntriesInTimeRange,
+        findUserCostEntriesInTimeRange,
+        sumKeyCostInTimeRange,
+        sumProviderCostInTimeRange,
+        sumUserCostInTimeRange,
+      } = await import("@/repository/statistics");
+
+      const { startTime, endTime } = await getTimeRangeForPeriodWithMode(
+        period,
+        dailyResetInfo.normalized,
+        effectiveResetMode
+      );
+      const effectiveResetAt =
+        type === "user" && period === "5h" && effectiveResetMode === "rolling"
+          ? resolveUser5hCostResetAt(options?.costResetAt, options?.limit5hCostResetAt)
+          : options?.costResetAt;
+      const effectiveStartTime = clipStartByResetAt(startTime, effectiveResetAt);
+
+      let current = 0;
+      let costEntries: Array<{
+        id: number;
+        createdAt: Date;
+        costUsd: number;
+      }> | null = null;
+
+      const isRollingWindow =
+        period === "5h" || (period === "daily" && effectiveResetMode === "rolling");
+
+      if (isRollingWindow) {
+        switch (type) {
+          case "key":
+            costEntries = await findKeyCostEntriesInTimeRange(id, effectiveStartTime, endTime);
+            break;
+          case "provider":
+            costEntries = await findProviderCostEntriesInTimeRange(id, effectiveStartTime, endTime);
+            break;
+          case "user":
+            costEntries = await findUserCostEntriesInTimeRange(id, effectiveStartTime, endTime);
+            break;
+          default:
+            costEntries = [];
+        }
+
+        current = costEntries.reduce((sum, row) => sum + row.costUsd, 0);
+      } else {
+        switch (type) {
+          case "key":
+            current = await sumKeyCostInTimeRange(id, effectiveStartTime, endTime);
+            break;
+          case "provider":
+            current = await sumProviderCostInTimeRange(id, effectiveStartTime, endTime);
+            break;
+          case "user":
+            current = await sumUserCostInTimeRange(id, effectiveStartTime, endTime);
+            break;
+          default:
+            current = 0;
+        }
+      }
+
+      // Cache Warming: 写回 Redis
+      if (RateLimitService.redis && RateLimitService.redis.status === "ready") {
+        try {
+          if (period === "5h") {
+            if (costEntries && costEntries.length > 0) {
+              const key = RateLimitService.get5hCostKey(type, id, "rolling");
+              await RateLimitService.warmRollingCostZset(key, costEntries, 21600);
+              logger.info(
+                `[RateLimit] Cache warmed for ${key}, value=${current} (rolling window, rebuilt)`
+              );
+            }
+          } else if (period === "daily" && effectiveResetMode === "rolling") {
+            // daily 滚动窗口：使用 ZSET + Lua 脚本
+            if (costEntries && costEntries.length > 0) {
+              const key = `${type}:${id}:cost_daily_rolling`;
+              await RateLimitService.warmRollingCostZset(key, costEntries, 90000);
+              logger.info(
+                `[RateLimit] Cache warmed for ${key}, value=${current} (daily rolling window, rebuilt)`
+              );
+            }
+          } else {
+            // daily fixed/周/月固定窗口：使用 STRING + 动态 TTL
+            const redisKey = period === "daily" ? `${period}_${dailyResetInfo.suffix}` : period;
+            const ttl = await getTTLForPeriodWithMode(
+              period,
+              dailyResetInfo.normalized,
+              effectiveResetMode
+            );
+            await RateLimitService.redis.set(
+              `${type}:${id}:cost_${redisKey}`,
+              current.toString(),
+              "EX",
+              ttl
+            );
+            logger.info(
+              `[RateLimit] Cache warmed for ${type}:${id}:cost_${redisKey}, value=${current}, ttl=${ttl}s`
+            );
+          }
+        } catch (error) {
+          logger.error("[RateLimit] Failed to warm cache:", error);
+        }
+      }
+
+      return current;
+    } catch (error) {
+      logger.error("[RateLimit] Get cost failed:", error);
+      return 0;
+    }
+  }
+
+  /**
+   * 检查用户 RPM（每分钟请求数）限制
+   * 使用 Redis ZSET 实现滑动窗口
+   */
+  static async checkUserRPM(
+    userId: number,
+    rpmLimit: number
+  ): Promise<{ allowed: boolean; reason?: string; current?: number }> {
+    if (!rpmLimit || rpmLimit <= 0) {
+      return { allowed: true }; // 未设置限制
+    }
+
+    if (!RateLimitService.redis) {
+      logger.warn("[RateLimit] Redis unavailable, skipping user RPM check");
+      return { allowed: true }; // Fail Open
+    }
+
+    const key = `user:${userId}:rpm_window`;
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000;
+
+    try {
+      // 使用 Pipeline 提高性能
+      const pipeline = RateLimitService.redis.pipeline();
+
+      // 1. 清理 1 分钟前的请求
+      pipeline.zremrangebyscore(key, "-inf", oneMinuteAgo);
+
+      // 2. 统计当前请求数
+      pipeline.zcard(key);
+
+      const results = await pipeline.exec();
+      const count = (results?.[1]?.[1] as number) || 0;
+
+      if (count >= rpmLimit) {
+        return {
+          allowed: false,
+          reason: `用户每分钟请求数上限已达到（${count}/${rpmLimit}）`,
+          current: count,
+        };
+      }
+
+      // 3. 记录本次请求
+      await RateLimitService.redis
+        .pipeline()
+        .zadd(key, now, `${now}:${Math.random()}`)
+        .expire(key, 120) // 2 分钟 TTL
+        .exec();
+
+      return { allowed: true, current: count + 1 };
+    } catch (error) {
+      logger.error(`[RateLimit] User RPM check failed for user ${userId}:`, error);
+      return { allowed: true }; // Fail Open
+    }
+  }
+
+  /**
+   * 检查 RPM（每分钟请求数）限制
+   * 目前仅支持 user 级别
+   */
+  static async checkRpmLimit(
+    id: number,
+    type: "user",
+    limit: number
+  ): Promise<{ allowed: boolean; reason?: string; current?: number }> {
+    if (type === "user") {
+      return RateLimitService.checkUserRPM(id, limit);
+    }
+
+    return { allowed: true };
+  }
+
+  /**
+   * 检查用户每日消费额度限制
+   * 优先使用 Redis，失败时降级到数据库查询
+   * @param resetTime - 重置时间 (HH:mm)，仅 fixed 模式使用
+   * @param resetMode - 重置模式：fixed 或 rolling
+   */
+  static async checkUserDailyCost(
+    userId: number,
+    dailyLimitUsd: number,
+    resetTime?: string,
+    resetMode?: DailyResetMode
+  ): Promise<{ allowed: boolean; reason?: string; current?: number }> {
+    if (!dailyLimitUsd || dailyLimitUsd <= 0) {
+      return { allowed: true }; // 未设置限制
+    }
+
+    const mode = resetMode ?? "fixed";
+    const normalizedResetTime = normalizeResetTime(resetTime);
+    let currentCost = 0;
+
+    try {
+      // Fast Path: Redis 查询
+      if (RateLimitService.redis && RateLimitService.redis.status === "ready") {
+        const now = Date.now();
+
+        if (mode === "rolling") {
+          // Rolling 模式：使用 ZSET + Lua 脚本
+          const key = `user:${userId}:cost_daily_rolling`;
+          const window24h = 24 * 60 * 60 * 1000;
+
+          const result = (await RateLimitService.redis.eval(
+            GET_COST_DAILY_ROLLING_WINDOW,
+            1,
+            key,
+            now.toString(),
+            window24h.toString()
+          )) as string;
+
+          currentCost = parseFloat(result || "0");
+
+          // Cache Miss 检测
+          if (currentCost === 0) {
+            const exists = await RateLimitService.redis.exists(key);
+            if (!exists) {
+              logger.info(
+                `[RateLimit] Cache miss for user:${userId}:cost_daily_rolling, querying database`
+              );
+
+              // 导入明细查询函数
+              const { findUserCostEntriesInTimeRange } = await import("@/repository/statistics");
+
+              // 计算滚动窗口的时间范围
+              const startTime = new Date(now - window24h);
+              const endTime = new Date(now);
+
+              // 查询明细并计算总和
+              const costEntries = await findUserCostEntriesInTimeRange(userId, startTime, endTime);
+              currentCost = costEntries.reduce((sum, row) => sum + row.costUsd, 0);
+
+              // Cache Warming: 重建 ZSET
+              if (costEntries.length > 0) {
+                await RateLimitService.warmRollingCostZset(key, costEntries, 90000); // 25 hours TTL
+              }
+            }
+          }
+        } else {
+          // Fixed 模式：使用 STRING 类型
+          const suffix = normalizedResetTime.replace(":", "");
+          const key = `user:${userId}:cost_daily_${suffix}`;
+
+          const cached = await RateLimitService.redis.get(key);
+          if (cached !== null) {
+            currentCost = parseFloat(cached);
+          } else {
+            // Cache Miss: 从数据库恢复
+            logger.info(`[RateLimit] Cache miss for ${key}, querying database`);
+            const { startTime, endTime } = await getTimeRangeForPeriodWithMode(
+              "daily",
+              normalizedResetTime,
+              mode
+            );
+            currentCost = await sumUserCostInTimeRange(userId, startTime, endTime);
+
+            // Cache Warming: 写回 Redis
+            const ttl = await getTTLForPeriodWithMode("daily", normalizedResetTime, "fixed");
+            await RateLimitService.redis.set(key, currentCost.toString(), "EX", ttl);
+          }
+        }
+      } else {
+        // Slow Path: 数据库查询（Redis 不可用）
+        logger.warn("[RateLimit] Redis unavailable, querying database for user daily cost");
+        const { startTime, endTime } = await getTimeRangeForPeriodWithMode(
+          "daily",
+          normalizedResetTime,
+          mode
+        );
+        currentCost = await sumUserCostInTimeRange(userId, startTime, endTime);
+      }
+
+      if (currentCost >= dailyLimitUsd) {
+        return {
+          allowed: false,
+          reason: `用户每日消费上限已达到（$${currentCost.toFixed(4)}/$${dailyLimitUsd}）`,
+          current: currentCost,
+        };
+      }
+
+      return { allowed: true, current: currentCost };
+    } catch (error) {
+      logger.error(`[RateLimit] User daily cost check failed for user ${userId}:`, error);
+      return { allowed: true }; // Fail Open
+    }
+  }
+
+  /**
+   * 累加用户今日消费（在 trackCost 后调用）
+   * @param resetTime - 重置时间 (HH:mm)，仅 fixed 模式使用
+   * @param resetMode - 重置模式：fixed 或 rolling
+   * @param options - 可选参数：requestId 和 createdAtMs 用于与 DB 时间轴保持一致
+   */
+  static async trackUserDailyCost(
+    userId: number,
+    cost: number,
+    resetTime?: string,
+    resetMode?: DailyResetMode,
+    options?: { requestId?: number; createdAtMs?: number }
+  ): Promise<void> {
+    if (!RateLimitService.redis || cost <= 0) return;
+
+    const mode = resetMode ?? "fixed";
+    const normalizedResetTime = normalizeResetTime(resetTime);
+
+    try {
+      if (mode === "rolling") {
+        // Rolling 模式：使用 ZSET + Lua 脚本
+        const key = `user:${userId}:cost_daily_rolling`;
+        const now = options?.createdAtMs ?? Date.now();
+        const window24h = 24 * 60 * 60 * 1000;
+        const requestId = options?.requestId != null ? String(options.requestId) : "";
+
+        await RateLimitService.redis.eval(
+          TRACK_COST_DAILY_ROLLING_WINDOW,
+          1,
+          key,
+          cost.toString(),
+          now.toString(),
+          window24h.toString(),
+          requestId
+        );
+
+        logger.debug(`[RateLimit] Tracked user daily cost (rolling): user=${userId}, cost=${cost}`);
+      } else {
+        // Fixed 模式：使用 STRING 类型
+        const suffix = normalizedResetTime.replace(":", "");
+        const key = `user:${userId}:cost_daily_${suffix}`;
+        const ttl = await getTTLForPeriodWithMode("daily", normalizedResetTime, "fixed");
+
+        await RateLimitService.redis.pipeline().incrbyfloat(key, cost).expire(key, ttl).exec();
+
+        logger.debug(`[RateLimit] Tracked user daily cost (fixed): user=${userId}, cost=${cost}`);
+      }
+    } catch (error) {
+      logger.error(`[RateLimit] Failed to track user daily cost:`, error);
+    }
+  }
+
+  /**
+   * 批量获取多个供应商的限额消费（Redis Pipeline）
+   * 用于避免 N+1 查询问题
+   *
+   * @param providerIds - 供应商 ID 列表
+   * @param dailyResetConfigs - 每个供应商的日限额重置配置
+   * @returns Map<providerId, { cost5h, costDaily, costWeekly, costMonthly }>
+   */
+  static async getCurrentCostBatch(
+    providerIds: number[],
+    dailyResetConfigs: Map<number, { resetTime?: string | null; resetMode?: string | null }>
+  ): Promise<
+    Map<number, { cost5h: number; costDaily: number; costWeekly: number; costMonthly: number }>
+  > {
+    const result = new Map<
+      number,
+      { cost5h: number; costDaily: number; costWeekly: number; costMonthly: number }
+    >();
+
+    // 初始化结果（默认为 0）
+    for (const providerId of providerIds) {
+      result.set(providerId, { cost5h: 0, costDaily: 0, costWeekly: 0, costMonthly: 0 });
+    }
+
+    if (providerIds.length === 0) {
+      return result;
+    }
+
+    // Redis 不可用时返回默认值
+    if (!RateLimitService.redis || RateLimitService.redis.status !== "ready") {
+      logger.warn("[RateLimit] Redis unavailable for batch cost query, returning zeros");
+      return result;
+    }
+
+    try {
+      const now = Date.now();
+      const window5h = 5 * 60 * 60 * 1000;
+      const window24h = 24 * 60 * 60 * 1000;
+      const pipeline = RateLimitService.redis.pipeline();
+
+      // 构建批量查询命令
+      // 记录每个供应商的查询顺序和类型
+      const queryMeta: Array<{
+        providerId: number;
+        period: "5h" | "daily" | "weekly" | "monthly";
+        isRolling: boolean;
+      }> = [];
+
+      for (const providerId of providerIds) {
+        const config = dailyResetConfigs.get(providerId);
+        const dailyResetMode = (config?.resetMode ?? "fixed") as DailyResetMode;
+        const { suffix } = RateLimitService.resolveDailyReset(config?.resetTime ?? undefined);
+
+        // 5h 滚动窗口
+        pipeline.eval(
+          GET_COST_5H_ROLLING_WINDOW,
+          1,
+          `provider:${providerId}:cost_5h_rolling`,
+          now.toString(),
+          window5h.toString()
+        );
+        queryMeta.push({ providerId, period: "5h", isRolling: true });
+
+        // Daily: 根据模式选择查询方式
+        if (dailyResetMode === "rolling") {
+          pipeline.eval(
+            GET_COST_DAILY_ROLLING_WINDOW,
+            1,
+            `provider:${providerId}:cost_daily_rolling`,
+            now.toString(),
+            window24h.toString()
+          );
+          queryMeta.push({ providerId, period: "daily", isRolling: true });
+        } else {
+          pipeline.get(`provider:${providerId}:cost_daily_${suffix}`);
+          queryMeta.push({ providerId, period: "daily", isRolling: false });
+        }
+
+        // Weekly
+        pipeline.get(`provider:${providerId}:cost_weekly`);
+        queryMeta.push({ providerId, period: "weekly", isRolling: false });
+
+        // Monthly
+        pipeline.get(`provider:${providerId}:cost_monthly`);
+        queryMeta.push({ providerId, period: "monthly", isRolling: false });
+      }
+
+      // 执行批量查询
+      const pipelineResults = await pipeline.exec();
+
+      if (!pipelineResults) {
+        logger.error("[RateLimit] Batch cost query returned null");
+        return result;
+      }
+
+      // 解析结果
+      for (let i = 0; i < queryMeta.length; i++) {
+        const meta = queryMeta[i];
+        const [err, value] = pipelineResults[i];
+
+        if (err) {
+          logger.error("[RateLimit] Batch query error for provider", {
+            providerId: meta.providerId,
+            period: meta.period,
+            error: err.message,
+          });
+          continue;
+        }
+
+        const cost = parseFloat((value as string) || "0");
+        const providerData = result.get(meta.providerId)!;
+
+        switch (meta.period) {
+          case "5h":
+            providerData.cost5h = cost;
+            break;
+          case "daily":
+            providerData.costDaily = cost;
+            break;
+          case "weekly":
+            providerData.costWeekly = cost;
+            break;
+          case "monthly":
+            providerData.costMonthly = cost;
+            break;
+        }
+      }
+
+      logger.debug(`[RateLimit] Batch cost query completed for ${providerIds.length} providers`);
+      return result;
+    } catch (error) {
+      logger.error("[RateLimit] Batch cost query failed:", error);
+      return result;
+    }
+  }
+
+  /**
+   * Check cost limits using lease-based mechanism
+   *
+   * This method uses the lease service to check if there's enough budget
+   * in the lease slice. If the lease is expired or missing, it will be
+   * refreshed from the database.
+   *
+   * @param entityId - The entity ID (key, user, or provider)
+   * @param entityType - The entity type
+   * @param limits - The cost limits to check
+   * @returns Whether the request is allowed and any failure reason
+   */
+  static async checkCostLimitsWithLease(
+    entityId: number,
+    entityType: "key" | "user" | "provider",
+    limits: {
+      limit_5h_usd: number | null;
+      limit_5h_reset_mode?: DailyResetMode;
+      limit_daily_usd: number | null;
+      daily_reset_time?: string;
+      daily_reset_mode?: DailyResetMode;
+      limit_weekly_usd: number | null;
+      limit_monthly_usd: number | null;
+      cost_reset_at?: Date | null;
+      limit_5h_cost_reset_at?: Date | null;
+    }
+  ): Promise<{ allowed: boolean; reason?: string; failOpen?: boolean }> {
+    const normalizedDailyReset = normalizeResetTime(limits.daily_reset_time);
+    const limit5hResetMode = limits.limit_5h_reset_mode ?? "rolling";
+    const effective5hResetAt =
+      limit5hResetMode === "rolling"
+        ? resolveUser5hCostResetAt(limits.cost_reset_at, limits.limit_5h_cost_reset_at)
+        : (limits.cost_reset_at ?? null);
+    const dailyResetMode = limits.daily_reset_mode ?? "fixed";
+
+    // Define windows to check with their limits
+    const windowChecks: Array<{
+      window: LeaseWindowType;
+      limit: number | null;
+      name: string;
+      resetTime: string;
+      resetMode: DailyResetMode;
+    }> = [
+      {
+        window: "5h",
+        limit: limits.limit_5h_usd,
+        name: "5h",
+        resetTime: "00:00",
+        resetMode: limit5hResetMode,
+      },
+      {
+        window: "daily",
+        limit: limits.limit_daily_usd,
+        name: "daily",
+        resetTime: normalizedDailyReset,
+        resetMode: dailyResetMode,
+      },
+      {
+        window: "weekly",
+        limit: limits.limit_weekly_usd,
+        name: "weekly",
+        resetTime: "00:00",
+        resetMode: "fixed" as DailyResetMode,
+      },
+      {
+        window: "monthly",
+        limit: limits.limit_monthly_usd,
+        name: "monthly",
+        resetTime: "00:00",
+        resetMode: "fixed" as DailyResetMode,
+      },
+    ];
+
+    try {
+      for (const check of windowChecks) {
+        if (!check.limit || check.limit <= 0) continue;
+
+        // Get or refresh lease from cache/DB
+        const lease = await LeaseService.getCostLease({
+          entityType,
+          entityId,
+          window: check.window,
+          limitAmount: check.limit,
+          resetTime: check.resetTime,
+          resetMode: check.resetMode,
+          costResetAt:
+            entityType === "user" && check.window === "5h" && check.resetMode === "rolling"
+              ? effective5hResetAt
+              : limits.cost_reset_at,
+        });
+
+        // Fail-open if lease retrieval failed
+        if (!lease) {
+          logger.warn("[RateLimit] Lease retrieval failed, fail-open", {
+            entityType,
+            entityId,
+            window: check.window,
+          });
+          continue; // Fail-open: allow this window check
+        }
+
+        // Check if remaining budget is sufficient (> 0)
+        if (lease.remainingBudget <= 0) {
+          const typeName =
+            entityType === "key" ? "Key" : entityType === "provider" ? "Provider" : "User";
+          return {
+            allowed: false,
+            reason: `${typeName} ${check.name} cost limit reached (usage: ${lease.currentUsage.toFixed(4)}/${check.limit.toFixed(4)})`,
+          };
+        }
+      }
+
+      return { allowed: true };
+    } catch (error) {
+      logger.error("[RateLimit] checkCostLimitsWithLease failed, fail-open", {
+        entityType,
+        entityId,
+        error,
+      });
+      return { allowed: true, failOpen: true };
+    }
+  }
+
+  /**
+   * Decrement lease budget after a request completes
+   *
+   * This should be called after the request is processed to deduct
+   * the actual cost from the lease budget.
+   *
+   * @param entityId - The entity ID
+   * @param entityType - The entity type
+   * @param window - The time window
+   * @param cost - The cost to deduct
+   * @returns The decrement result
+   */
+  static async decrementLeaseBudget(
+    entityId: number,
+    entityType: "key" | "user" | "provider",
+    window: LeaseWindowType,
+    cost: number,
+    options?: { resetMode?: DailyResetMode }
+  ): Promise<DecrementLeaseBudgetResult> {
+    return LeaseService.decrementLeaseBudget({
+      entityType,
+      entityId,
+      window,
+      cost,
+      resetMode: options?.resetMode,
+    });
+  }
+}

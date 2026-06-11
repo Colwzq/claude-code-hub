@@ -1,0 +1,43 @@
+{
+  "pageTitle": "Витрина моделей",
+  "pageDescription": "Доступные модели, итоговые цены и рейтинг средней стоимости за 30 дней.",
+  "title": "Витрина моделей",
+  "description": "Модели показаны по ID модели. Цены являются итоговыми ценами группы default в USD за 1M tokens. Если маршруты отличаются по цене, отображается максимальная итоговая цена.",
+  "updatedAt": "Данные обновлены: {time}",
+  "empty": "Нет подходящих моделей",
+  "tableTitle": "Доступные модели",
+  "tableDescription": "Модели без валидной цены input и output token скрыты. Средняя стоимость считается по token mix за последние 30 дней.",
+  "summary": {
+    "models": "Доступные модели",
+    "requests30d": "Запросы за 30 дн.",
+    "unit": "Единица цены",
+    "rankedModels": "Модели в рейтинге",
+    "highestAverageCost": "Макс. средняя стоимость"
+  },
+  "filters": {
+    "search": "Поиск по ID модели",
+    "allCompanies": "Все компании"
+  },
+  "tabs": {
+    "market": "Витрина моделей",
+    "ranking": "Рейтинг цен"
+  },
+  "columns": {
+    "rank": "Ранг",
+    "model": "ID модели",
+    "company": "Компания",
+    "averageCost": "Средняя / 1M",
+    "input": "Input / 1M",
+    "output": "Output / 1M",
+    "cacheWrite": "Cache write / 1M",
+    "cacheRead": "Cache read / 1M",
+    "cacheHitRate": "Cache hit",
+    "context": "Контекст",
+    "requests30d": "Запросы за 30 дн."
+  },
+  "ranking": {
+    "noHistory": "- означает отсутствие исторического token mix за последние 30 дней; такие модели показаны последними.",
+    "desc": "От дорогих",
+    "asc": "От дешевых"
+  }
+}

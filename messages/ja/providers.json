@@ -1,0 +1,52 @@
+{
+  "_comment": "Provider types and related translations for Japanese",
+
+  "types": {
+    "claude": {
+      "label": "Claude",
+      "description": "Anthropic 公式 API"
+    },
+    "claudeAuth": {
+      "label": "Claude Auth",
+      "description": "Claude リレーサービス"
+    },
+    "codex": {
+      "label": "Codex",
+      "description": "Codex CLI API"
+    },
+    "geminiCli": {
+      "label": "Gemini CLI",
+      "description": "Gemini CLI API"
+    },
+    "gemini": {
+      "label": "Gemini",
+      "description": "Google Gemini 公式 API"
+    },
+    "openaiCompatible": {
+      "label": "OpenAI Compatible",
+      "description": "OpenAI 互換 API"
+    }
+  },
+
+  "providerGroups": {
+    "title": "プロバイダーグループ",
+    "description": "プロバイダーグループとコスト倍率を管理",
+    "addGroup": "グループを追加",
+    "editGroup": "グループを編集",
+    "deleteGroup": "グループを削除",
+    "name": "グループ名",
+    "multiplier": "コスト倍率",
+    "groupDescription": "説明",
+    "providerCount": "プロバイダー数",
+    "defaultGroup": "デフォルト",
+    "cannotDeleteDefault": "デフォルトグループは削除できません",
+    "deleteConfirm": "このグループを削除してもよろしいですか？",
+    "createSuccess": "プロバイダーグループを作成しました",
+    "updateSuccess": "プロバイダーグループを更新しました",
+    "deleteSuccess": "プロバイダーグループを削除しました",
+    "nameRequired": "グループ名は必須です",
+    "duplicateName": "同名のグループが既に存在します",
+    "invalidMultiplier": "コスト倍率は0以上の数値でなければなりません",
+    "noGroups": "プロバイダーグループが見つかりません"
+  }
+}

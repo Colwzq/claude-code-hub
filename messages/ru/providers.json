@@ -1,0 +1,52 @@
+{
+  "_comment": "Provider types and related translations for Russian",
+
+  "types": {
+    "claude": {
+      "label": "Claude",
+      "description": "Официальный API Anthropic"
+    },
+    "claudeAuth": {
+      "label": "Claude Auth",
+      "description": "Сервис ретрансляции Claude"
+    },
+    "codex": {
+      "label": "Codex",
+      "description": "Codex CLI API"
+    },
+    "geminiCli": {
+      "label": "Gemini CLI",
+      "description": "Gemini CLI API"
+    },
+    "gemini": {
+      "label": "Gemini",
+      "description": "Официальный API Google Gemini"
+    },
+    "openaiCompatible": {
+      "label": "OpenAI Compatible",
+      "description": "API совместимый с OpenAI"
+    }
+  },
+
+  "providerGroups": {
+    "title": "Группы поставщиков",
+    "description": "Управление группами поставщиков и их множителями стоимости",
+    "addGroup": "Добавить группу",
+    "editGroup": "Редактировать группу",
+    "deleteGroup": "Удалить группу",
+    "name": "Название группы",
+    "multiplier": "Множитель стоимости",
+    "groupDescription": "Описание",
+    "providerCount": "Поставщиков",
+    "defaultGroup": "По умолчанию",
+    "cannotDeleteDefault": "Невозможно удалить группу по умолчанию",
+    "deleteConfirm": "Вы уверены, что хотите удалить эту группу?",
+    "createSuccess": "Группа поставщиков успешно создана",
+    "updateSuccess": "Группа поставщиков успешно обновлена",
+    "deleteSuccess": "Группа поставщиков успешно удалена",
+    "nameRequired": "Название группы обязательно",
+    "duplicateName": "Группа с таким названием уже существует",
+    "invalidMultiplier": "Множитель стоимости должен быть неотрицательным числом",
+    "noGroups": "Группы поставщиков не найдены"
+  }
+}

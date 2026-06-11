@@ -1,0 +1,43 @@
+{
+  "pageTitle": "モデルマーケット",
+  "pageDescription": "利用可能なモデル、最終課金価格、30日平均コストランキングを確認します。",
+  "title": "モデルマーケット",
+  "description": "モデル ID 単位で利用可能なモデルを表示します。価格は default グループの最終価格で、単位は USD / 1M tokens です。複数経路の価格が異なる場合は最高価格を表示します。",
+  "updatedAt": "データ更新: {time}",
+  "empty": "一致するモデルはありません",
+  "tableTitle": "利用可能モデル",
+  "tableDescription": "有効な入力または出力 token 単価がないモデルは非表示です。平均コストは直近30日の token 構成で計算します。",
+  "summary": {
+    "models": "利用可能モデル",
+    "requests30d": "30日間リクエスト",
+    "unit": "価格単位",
+    "rankedModels": "ランキング対象",
+    "highestAverageCost": "最高平均コスト"
+  },
+  "filters": {
+    "search": "モデル ID を検索",
+    "allCompanies": "すべての会社"
+  },
+  "tabs": {
+    "market": "モデルマーケット",
+    "ranking": "価格ランキング"
+  },
+  "columns": {
+    "rank": "順位",
+    "model": "モデル ID",
+    "company": "会社",
+    "averageCost": "平均 / 1M",
+    "input": "入力 / 1M",
+    "output": "出力 / 1M",
+    "cacheWrite": "キャッシュ書込 / 1M",
+    "cacheRead": "キャッシュ読込 / 1M",
+    "cacheHitRate": "キャッシュ命中",
+    "context": "コンテキスト",
+    "requests30d": "30日間リクエスト"
+  },
+  "ranking": {
+    "noHistory": "- は直近30日に推定可能な履歴 token がないことを示し、最後に表示されます。",
+    "desc": "高い順",
+    "asc": "安い順"
+  }
+}

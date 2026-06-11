@@ -1,0 +1,328 @@
+/**
+ * OpenAPI 规范验证测试
+ *
+ * 目的:
+ * - 验证生成的 OpenAPI 文档符合 3.1.0 规范
+ * - 确保所有端点都有必要的文档字段（summary, description, tags）
+ * - 验证 schema 定义完整性
+ *
+ * 用法:
+ *   bun run test:api
+ */
+
+import { beforeAll, describe, expect, test } from "vitest";
+import { callActionsRoute } from "../test-utils";
+
+// 类型定义（避免引入 OpenAPI 类型包）
+type OpenAPIDocument = {
+  openapi: string;
+  info: {
+    title: string;
+    version: string;
+    description?: string;
+    contact?: { name: string; url: string };
+    license?: { name: string; url: string };
+  };
+  servers: Array<{ url: string; description: string }>;
+  paths: Record<
+    string,
+    Record<
+      string,
+      {
+        summary?: string;
+        description?: string;
+        tags?: string[];
+        parameters?: unknown[];
+        requestBody?: unknown;
+        responses?: Record<string, unknown>;
+        security?: unknown[];
+      }
+    >
+  >;
+  tags?: Array<{ name: string; description?: string }>;
+  components?: {
+    securitySchemes?: Record<string, unknown>;
+    schemas?: Record<string, unknown>;
+  };
+};
+
+type JsonSchemaProperty = {
+  minimum?: number;
+  maximum?: number;
+  properties?: Record<string, JsonSchemaProperty>;
+};
+
+type OpenApiOperation = OpenAPIDocument["paths"][string][string];
+
+function getJsonRequestSchema(
+  openApiDoc: OpenAPIDocument,
+  path: string
+): JsonSchemaProperty | undefined {
+  const requestBody = openApiDoc.paths[path]?.post?.requestBody as
+    | {
+        content?: {
+          "application/json"?: {
+            schema?: JsonSchemaProperty;
+          };
+        };
+      }
+    | undefined;
+
+  return requestBody?.content?.["application/json"]?.schema;
+}
+
+function getOperation(
+  openApiDoc: OpenAPIDocument,
+  path: string,
+  method: string
+): OpenApiOperation | undefined {
+  return openApiDoc.paths[path]?.[method];
+}
+
+describe("OpenAPI 规范验证", () => {
+  let openApiDoc: OpenAPIDocument;
+
+  beforeAll(async () => {
+    const { response, json } = await callActionsRoute({
+      method: "GET",
+      pathname: "/api/actions/openapi.json",
+    });
+
+    expect(response.ok).toBe(true);
+    expect(response.headers.get("content-type")).toContain("application/json");
+
+    openApiDoc = json as OpenAPIDocument;
+    expect(openApiDoc).toBeDefined();
+  });
+
+  test("应该符合 OpenAPI 3.1.0 规范", () => {
+    expect(openApiDoc.openapi).toBe("3.1.0");
+    expect(openApiDoc.info).toBeDefined();
+    expect(openApiDoc.info.title).toBe("Claude Code Hub API");
+    expect(openApiDoc.info.version).toBeDefined();
+  });
+
+  test("应该包含项目元信息", () => {
+    expect(openApiDoc.info.contact).toBeDefined();
+    expect(openApiDoc.info.contact?.name).toBe("项目维护团队");
+    expect(openApiDoc.info.contact?.url).toContain("github.com");
+
+    expect(openApiDoc.info.license).toBeDefined();
+    expect(openApiDoc.info.license?.name).toBe("MIT License");
+  });
+
+  test("应该定义 servers 配置", () => {
+    expect(openApiDoc.servers).toBeDefined();
+    expect(openApiDoc.servers.length).toBeGreaterThan(0);
+
+    for (const server of openApiDoc.servers) {
+      expect(server.url).toBeDefined();
+      expect(server.description).toBeDefined();
+    }
+  });
+
+  test("应该定义所有标签分组", () => {
+    const expectedTags = [
+      "用户管理",
+      "密钥管理",
+      "供应商管理",
+      "模型价格",
+      "统计分析",
+      "使用日志",
+      "概览",
+      "公开状态",
+      "敏感词管理",
+      "Session 管理",
+      "通知管理",
+    ];
+
+    expect(openApiDoc.tags).toBeDefined();
+    expect(openApiDoc.tags!.length).toBe(expectedTags.length);
+
+    for (const tagName of expectedTags) {
+      const tag = openApiDoc.tags!.find((t) => t.name === tagName);
+      expect(tag).toBeDefined();
+      expect(tag!.description).toBeDefined();
+      expect(tag!.description!.length).toBeGreaterThan(10); // 确保描述足够详细
+    }
+  });
+
+  test("应该定义 Cookie 认证方案", () => {
+    expect(openApiDoc.components?.securitySchemes).toBeDefined();
+    expect(openApiDoc.components!.securitySchemes!.cookieAuth).toBeDefined();
+  });
+
+  test("所有端点都应该有 summary 字段", () => {
+    const paths = openApiDoc.paths;
+    const pathsWithoutSummary: string[] = [];
+
+    for (const [path, methods] of Object.entries(paths)) {
+      for (const [method, operation] of Object.entries(methods)) {
+        if (!operation.summary) {
+          pathsWithoutSummary.push(`${method.toUpperCase()} ${path}`);
+        }
+      }
+    }
+
+    expect(pathsWithoutSummary).toEqual([]);
+  });
+
+  test("所有端点都应该有 description 字段", () => {
+    const paths = openApiDoc.paths;
+    const pathsWithoutDescription: string[] = [];
+
+    for (const [path, methods] of Object.entries(paths)) {
+      for (const [method, operation] of Object.entries(methods)) {
+        if (!operation.description) {
+          pathsWithoutDescription.push(`${method.toUpperCase()} ${path}`);
+        }
+      }
+    }
+
+    expect(pathsWithoutDescription).toEqual([]);
+  });
+
+  test("所有端点都应该有 tags 分组", () => {
+    const paths = openApiDoc.paths;
+    const pathsWithoutTags: string[] = [];
+
+    for (const [path, methods] of Object.entries(paths)) {
+      for (const [method, operation] of Object.entries(methods)) {
+        if (!operation.tags || operation.tags.length === 0) {
+          pathsWithoutTags.push(`${method.toUpperCase()} ${path}`);
+        }
+      }
+    }
+
+    expect(pathsWithoutTags).toEqual([]);
+  });
+
+  test("所有 POST 端点都应该定义响应 schema", () => {
+    const paths = openApiDoc.paths;
+    const pathsWithoutResponses: string[] = [];
+
+    for (const [path, methods] of Object.entries(paths)) {
+      const postOperation = methods.post;
+      if (postOperation && !postOperation.responses) {
+        pathsWithoutResponses.push(`POST ${path}`);
+      }
+    }
+
+    expect(pathsWithoutResponses).toEqual([]);
+  });
+
+  test("应该包含标准错误响应定义", () => {
+    const firstOperation = getOperation(openApiDoc, "/api/actions/users/getUsers", "post");
+
+    expect(firstOperation.responses).toBeDefined();
+    expect(firstOperation.responses!["200"]).toBeDefined();
+    expect(firstOperation.responses!["400"]).toBeDefined();
+    expect(firstOperation.responses!["401"]).toBeDefined();
+    expect(firstOperation.responses!["500"]).toBeDefined();
+  });
+
+  test("documents public status endpoints", () => {
+    const publicStatusOperation = getOperation(openApiDoc, "/api/public-status", "get");
+    const publicSiteMetaOperation = getOperation(openApiDoc, "/api/public-site-meta", "get");
+
+    expect(publicStatusOperation).toBeDefined();
+    expect(publicStatusOperation?.summary).toBe("读取公开状态投影");
+    expect(publicStatusOperation?.tags).toEqual(["公开状态"]);
+    expect(publicStatusOperation?.security).toEqual([]);
+    expect(publicStatusOperation?.responses?.["200"]).toBeDefined();
+    expect(publicStatusOperation?.responses?.["400"]).toBeDefined();
+    expect(publicStatusOperation?.responses?.["503"]).toBeDefined();
+    expect(publicStatusOperation?.parameters).toBeDefined();
+
+    const parameterNames = (publicStatusOperation?.parameters as Array<{ name?: string }>).map(
+      (parameter) => parameter.name
+    );
+    expect(parameterNames).toEqual(
+      expect.arrayContaining([
+        "interval",
+        "rangeHours",
+        "groupSlug",
+        "groupSlugs",
+        "model",
+        "models",
+        "status",
+        "q",
+        "include",
+      ])
+    );
+
+    expect(publicSiteMetaOperation).toBeDefined();
+    expect(publicSiteMetaOperation?.summary).toBe("读取公开站点元数据投影");
+    expect(publicSiteMetaOperation?.tags).toEqual(["公开状态"]);
+    expect(publicSiteMetaOperation?.security).toEqual([]);
+    expect(publicSiteMetaOperation?.responses?.["200"]).toBeDefined();
+    expect(publicSiteMetaOperation?.responses?.["503"]).toBeDefined();
+  });
+
+  test("端点数量应该符合预期", () => {
+    const totalPaths = Object.keys(openApiDoc.paths).length;
+
+    // 端点数量会随着功能模块增长而变化：这里只做“合理范围”约束
+    expect(totalPaths).toBeGreaterThanOrEqual(40);
+    expect(totalPaths).toBeLessThanOrEqual(80);
+  });
+
+  test("summary 和 description 应该不同", () => {
+    const paths = openApiDoc.paths;
+    const violations: string[] = [];
+    const totalPaths = Object.keys(paths).length;
+
+    for (const [path, methods] of Object.entries(paths)) {
+      for (const [method, operation] of Object.entries(methods)) {
+        if (operation.summary && operation.description) {
+          // summary 应该是简短版本，description 可以包含更多信息
+          // 如果完全相同，可能需要优化
+          if (operation.summary === operation.description) {
+            violations.push(`${method.toUpperCase()} ${path}`);
+          }
+        }
+      }
+    }
+
+    // 允许部分端点 summary 和 description 相同（简单操作）
+    // 但不应该太多（允许 35% 以内）
+    expect(violations.length).toBeLessThan(totalPaths * 0.35);
+  });
+
+  test("users 列表请求 schema 应与兼容参数归一化保持一致", () => {
+    for (const path of ["/api/actions/users/getUsers", "/api/actions/users/getUsersBatch"]) {
+      const schema = getJsonRequestSchema(openApiDoc, path);
+      const pageSchema = schema?.properties?.page;
+      const limitSchema = schema?.properties?.limit;
+
+      expect(pageSchema?.minimum).toBe(0);
+      expect(limitSchema).toBeDefined();
+      expect(limitSchema?.maximum).toBeUndefined();
+    }
+  });
+
+  test("issue-947: addKey/editKey 请求 schema 应暴露 limit5hResetMode", () => {
+    for (const path of ["/api/actions/keys/addKey", "/api/actions/keys/editKey"]) {
+      const schema = getJsonRequestSchema(openApiDoc, path);
+      expect(schema?.properties?.limit5hResetMode).toBeDefined();
+    }
+  });
+
+  test("issue-947: addUser 响应 schema 应暴露 user.limit5hResetMode", () => {
+    const responseSchema = (
+      openApiDoc.paths["/api/actions/users/addUser"]?.post?.responses?.["200"] as
+        | {
+            content?: {
+              "application/json"?: {
+                schema?: JsonSchemaProperty;
+              };
+            };
+          }
+        | undefined
+    )?.content?.["application/json"]?.schema;
+
+    expect(
+      responseSchema?.properties?.data?.properties?.user?.properties?.limit5hResetMode
+    ).toBeDefined();
+  });
+});

@@ -1,0 +1,20 @@
+{
+  "copy": "Копировать",
+  "copyFailed": "Не удалось скопировать",
+  "copySuccess": "Скопировано {name} в буфер обмена",
+  "duplicatePath": "Обнаружен дублирующийся путь",
+  "invalidUrl": "Неверный формат URL",
+  "invalidUrlDesc": "Пожалуйста, введите действительный HTTP/HTTPS адрес",
+  "title": "Предварительный просмотр URL",
+  "endpoints": {
+    "claudeMessages": "Claude Messages",
+    "claudeCountTokens": "Claude Count Tokens",
+    "codexResponses": "Codex Responses",
+    "openaiChatCompletions": "OpenAI Chat Completions",
+    "openaiModels": "OpenAI Models",
+    "geminiGenerateContent": "Gemini Generate Content",
+    "geminiStreamContent": "Gemini Stream Content",
+    "geminiCliGenerate": "Gemini CLI Generate",
+    "geminiCliStream": "Gemini CLI Stream"
+  }
+}

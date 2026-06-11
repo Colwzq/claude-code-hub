@@ -1,0 +1,391 @@
+{
+  "header": {
+    "title": "用戶配额",
+    "role": {
+      "admin": "管理员",
+      "user": "用戶"
+    },
+    "keysCountSuffix": "个密钥",
+    "rpm": "请求限流",
+    "todayCost": "今日消费",
+    "exceededNotice": "已超过限额,请联系管理员处理"
+  },
+  "countdown": {
+    "reset": "重置倒计时"
+  },
+  "windowType": {
+    "5h": {
+      "label": "5小时滚动",
+      "description": "统计过去5小时内的消费,每小时滚动更新"
+    },
+    "weekly": {
+      "label": "每週重置",
+      "description": "自然周制(周一00:00重置),整周统计"
+    },
+    "monthly": {
+      "label": "每月重置",
+      "description": "自然月制(每月1日00:00重置),整月统计"
+    },
+    "daily": {
+      "label": "每日重置",
+      "description": "自然日制(每日00:00重置),按日统计"
+    }
+  },
+  "toolbar": {
+    "searchPlaceholder": "搜索用戶名或密钥",
+    "filter": "筛选",
+    "sort": "排序",
+    "refresh": "刷新",
+    "autoRefresh": "自动刷新",
+    "filterOptions": {
+      "all": "全部",
+      "warning": "预警",
+      "exceeded": "已超限"
+    },
+    "sortOptions": {
+      "name": "按名称",
+      "usage": "按使用率"
+    },
+    "interval": {
+      "10s": "10秒",
+      "30s": "30秒",
+      "60s": "60秒"
+    }
+  },
+  "layout": {
+    "title": "限額管理",
+    "description": "查看和管理所有層級的限額使用情況",
+    "tabs": {
+      "users": "用戶限額",
+      "keys": "密鑰限額",
+      "providers": "供應商限額"
+    }
+  },
+  "users": {
+    "title": "用戶限額統計",
+    "totalCount": "共 {count} 個用戶",
+    "noNote": "無備註",
+    "rpm": {
+      "label": "RPM 限額",
+      "description": "每分鐘請求數"
+    },
+    "dailyCost": {
+      "label": "每日消費",
+      "resetAt": "重置於"
+    },
+    "noQuotaData": "無法獲取限額資訊",
+    "noMatches": "未找到匹配的用戶",
+    "noData": "暫無用戶數據",
+    "sort": {
+      "name": "按名稱",
+      "usage": "按使用率"
+    },
+    "filter": {
+      "all": "全部",
+      "warning": "接近限額 (>60%)",
+      "exceeded": "已超限 (≥100%)"
+    },
+    "expiresAtLabel": "過期時間"
+  },
+  "providers": {
+    "title": "供應商限額統計",
+    "totalCount": "共 {count} 個供應商",
+    "filterCount": "顯示 {filtered} / {total} 個供應商",
+    "searchPlaceholder": "搜尋供應商名稱...",
+    "status": {
+      "enabled": "啟用",
+      "disabled": "禁用"
+    },
+    "card": {
+      "priority": "優先級",
+      "weight": "權重"
+    },
+    "sort": {
+      "name": "按名稱",
+      "priority": "按優先級",
+      "weight": "按權重",
+      "usage": "按使用量"
+    },
+    "list": {
+      "resetIn": "重置於",
+      "unlimited": "無限制",
+      "current": "當前",
+      "limit": "限制",
+      "used": "已用"
+    },
+    "cost5h": {
+      "label": "5小時消費"
+    },
+    "costDaily": {
+      "label": "每日消費",
+      "resetAt": "重置於"
+    },
+    "costWeekly": {
+      "label": "周消費",
+      "resetAt": "重置於"
+    },
+    "costMonthly": {
+      "label": "月消費",
+      "resetAt": "重置於"
+    },
+    "costTotal": {
+      "label": "總消費"
+    },
+    "concurrentSessions": {
+      "label": "並發 Session"
+    },
+    "noQuotaSet": "未設置限額",
+    "noQuotaData": "無法獲取限額資訊",
+    "noMatches": "沒有匹配的供應商",
+    "noMatchesDesc": "沒有供應商符合您的搜尋條件，請嘗試調整篩選條件。",
+    "noProvidersDesc": "尚未配置任何供應商。",
+    "unlimitedSection": "未設置限額的供應商 ({count}個)"
+  },
+  "keys": {
+    "title": "密鑰限額統計",
+    "totalCount": "共 {users} 個用戶,{keys} 個密鑰",
+    "searchPlaceholder": "搜索用戶或密鑰...",
+    "filterLabel": "篩選條件",
+    "filterCount": "顯示 {users} 個用戶,{keys} 個密鑰",
+    "filter": {
+      "all": "全部密鑰",
+      "keyQuota": "僅密鑰限額",
+      "userQuotaOnly": "僅用戶限額",
+      "warning": "預警(≥60%)",
+      "exceeded": "超限(≥100%)"
+    },
+    "table": {
+      "keyName": "密鑰名稱",
+      "quotaType": "限額類型",
+      "cost5h": "5小時限額",
+      "costDaily": "每日限額",
+      "costWeekly": "周限額",
+      "costMonthly": "月限額",
+      "costTotal": "總限額",
+      "concurrentSessions": "並發限制",
+      "status": "狀態",
+      "actions": "操作"
+    },
+    "quotaType": {
+      "independent": "獨立限額",
+      "inherited": "繼承用戶"
+    },
+    "status": {
+      "disabled": "已禁用",
+      "restricted": "受限",
+      "normal": "正常"
+    },
+    "noMatches": "沒有匹配的用戶或密鑰",
+    "editDialog": {
+      "title": "設置密鑰限額",
+      "description": "密鑰: {keyName} ({userName})",
+      "cost5h": {
+        "label": "5小時限額 (USD)",
+        "placeholder": "不限制",
+        "current": "當前已用: {currency}{current} / {currency}{limit}"
+      },
+      "costDaily": {
+        "label": "每日限額 (USD)",
+        "placeholder": "不限制",
+        "current": "當前已用: {currency}{current} / {currency}{limit}"
+      },
+      "dailyResetMode": {
+        "label": "每日重置模式",
+        "options": {
+          "fixed": "固定時間重置",
+          "rolling": "滾動窗口（24小時）"
+        },
+        "desc": {
+          "fixed": "每天在指定時間重置額度",
+          "rolling": "從首次請求開始計算24小時滾動窗口"
+        }
+      },
+      "dailyResetTime": {
+        "label": "每日重置時間",
+        "placeholder": "HH:mm"
+      },
+      "costWeekly": {
+        "label": "周限額 (USD)",
+        "placeholder": "不限制",
+        "current": "當前已用: {currency}{current} / {currency}{limit}"
+      },
+      "costMonthly": {
+        "label": "月限額 (USD)",
+        "placeholder": "不限制",
+        "current": "當前已用: {currency}{current} / {currency}{limit}"
+      },
+      "limitTotalUsd": {
+        "label": "總限額 (USD)",
+        "placeholder": "不限制",
+        "current": "當前已用: {currency}{current} / {currency}{limit}"
+      },
+      "concurrentSessions": {
+        "label": "並發 Session 限額",
+        "placeholder": "0 = 不限制",
+        "current": "當前並發: {current} / {limit}"
+      },
+      "clearAll": "清除所有限額",
+      "save": "保存",
+      "setQuota": "設置限額",
+      "success": "限額設置成功",
+      "clearSuccess": "限額已清除",
+      "error": "設置失敗",
+      "clearError": "清除失敗",
+      "retryError": "設置失敗,請稍後重試",
+      "limit5hResetMode": {
+        "label": "5 小時重設模式",
+        "options": {
+          "fixed": "固定窗口",
+          "rolling": "滾動窗口（5小時）"
+        },
+        "desc": {
+          "fixed": "從首次成功記帳開始鎖定 5 小時固定窗口",
+          "rolling": "依最近5小時滾動窗口統計額度"
+        }
+      }
+    },
+    "editUserDialog": {
+      "title": "設置用戶限額",
+      "description": "用戶: {userName}",
+      "rpm": {
+        "label": "每分鐘請求數 (RPM)",
+        "placeholder": "60",
+        "current": "當前: {current} / {limit} 請求/分鐘"
+      },
+      "dailyQuota": {
+        "label": "每日消費限額 (USD)",
+        "placeholder": "100",
+        "current": "今日已用: {currency}{current} / {currency}{limit}"
+      },
+      "save": "保存",
+      "editQuota": "編輯限額",
+      "success": "用戶限額設置成功",
+      "error": "設置失敗",
+      "retryError": "設置失敗,請稍後重試"
+    },
+    "editKeyForm": {
+      "title": "編輯金鑰",
+      "description": "修改金鑰的名稱、過期時間和流量限制設定。",
+      "keyName": {
+        "label": "金鑰名稱",
+        "placeholder": "請輸入金鑰名稱",
+        "required": "金鑰名稱 *"
+      },
+      "expiresAt": {
+        "label": "過期時間",
+        "placeholder": "選擇過期時間",
+        "description": "留空表示永不過期"
+      },
+      "canLoginWebUi": {
+        "label": "啟用獨立餘額查詢頁",
+        "description": "允許使用者透過專屬頁面查看餘額"
+      },
+      "limit5hUsd": {
+        "label": "5小時消費上限 (USD)",
+        "placeholder": "留空表示無限制",
+        "description": "5小時內最大消費金額",
+        "descriptionWithUserLimit": "不能超過使用者5小時限額 ({limit})"
+      },
+      "limitDailyUsd": {
+        "label": "每日消費上限 (USD)",
+        "placeholder": "留空表示無限制",
+        "description": "每日最大消費金額"
+      },
+      "dailyResetMode": {
+        "label": "每日重置模式",
+        "options": {
+          "fixed": "固定時間重置",
+          "rolling": "滾動窗口（24小時）"
+        },
+        "desc": {
+          "fixed": "每天在指定時間重置額度",
+          "rolling": "從首次請求開始計算24小時滾動窗口"
+        }
+      },
+      "dailyResetTime": {
+        "label": "每日重置時間",
+        "placeholder": "HH:mm",
+        "description": "每日限額的重置時間（使用系統時區）"
+      },
+      "limitWeeklyUsd": {
+        "label": "週消費上限 (USD)",
+        "placeholder": "留空表示無限制",
+        "description": "每週最大消費金額",
+        "descriptionWithUserLimit": "不能超過使用者週限額 ({limit})"
+      },
+      "limitMonthlyUsd": {
+        "label": "月消費上限 (USD)",
+        "placeholder": "留空表示無限制",
+        "description": "每月最大消費金額",
+        "descriptionWithUserLimit": "不能超過使用者月限額 ({limit})"
+      },
+      "limitTotalUsd": {
+        "label": "總消費上限 (USD)",
+        "placeholder": "留空表示無限制",
+        "description": "累計消費上限（不重置）",
+        "descriptionWithUserLimit": "不能超過使用者總限額 ({limit})"
+      },
+      "limitConcurrentSessions": {
+        "label": "並發 Session 上限",
+        "placeholder": "0 表示無限制",
+        "description": "同時運行的對話數量",
+        "descriptionWithUserLimit": "不能超過使用者並發限額 ({limit})"
+      },
+      "providerGroup": {
+        "label": "供應商分組",
+        "placeholder": "輸入供應商分組標籤，按 Enter 新增",
+        "description": "供應商分組（預設：default）",
+        "defaultDescription": "default 分組包含所有未設定 groupTag 的供應商",
+        "descriptionWithUserGroup": "供應商分組（預設：default；使用者分組：{group}）"
+      },
+      "submitText": "儲存修改",
+      "loadingText": "儲存中...",
+      "success": "金鑰更新成功",
+      "error": "金鑰更新失敗",
+      "retryError": "儲存失敗，請稍後重試",
+      "keyInfoMissing": "金鑰資訊不存在",
+      "resetLimits": {
+        "title": "重置限額",
+        "description": "重置該金鑰的所有限額累計消費計數器。請求日誌和統計數據將被保留。",
+        "button": "重置限額",
+        "confirmTitle": "確認重置限額？",
+        "confirmDescription": "這將把所有累計消費計數器（5小時、每日、每週、每月、總計）歸零。請求日誌和使用統計將被保留。",
+        "confirm": "是的，重置限額",
+        "loading": "正在重置...",
+        "error": "重置限額失敗",
+        "success": "所有限額已重置",
+        "lastResetAt": "上次重置: {date}"
+      },
+      "limit5hResetMode": {
+        "label": "5 小時重設模式",
+        "options": {
+          "fixed": "固定窗口",
+          "rolling": "滾動窗口（5小時）"
+        },
+        "desc": {
+          "fixed": "從首次成功記帳開始鎖定 5 小時固定窗口",
+          "rolling": "依最近5小時滾動窗口統計額度"
+        }
+      }
+    }
+  },
+  "quickEdit": {
+    "title": "調整限額",
+    "currentLabel": "當前",
+    "noLimit": "無限額",
+    "tabs": {
+      "set": "設定值",
+      "add": "增加值"
+    },
+    "setPlaceholder": "輸入新限額（留空=無限額）",
+    "addPlaceholder": "輸入要增加的值",
+    "preview": "新限額：{value}",
+    "previewNoLimit": "將清除限額（無限額）",
+    "save": "儲存",
+    "cancel": "取消",
+    "saveSuccess": "限額已更新",
+    "saveFailed": "更新失敗",
+    "invalidNumber": "請輸入有效數字",
+    "negativeNotAllowed": "不能為負數"
+  }
+}

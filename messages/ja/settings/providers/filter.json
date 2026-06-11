@@ -1,0 +1,18 @@
+{
+  "circuitBroken": "サーキットブレーカー",
+  "keyCircuitBroken": "キー遮断",
+  "endpointCircuitBroken": "エンドポイント遮断",
+  "groups": {
+    "all": "すべて",
+    "default": "default",
+    "label": "グループ:"
+  },
+  "status": {
+    "active": "有効",
+    "all": "すべてのステータス",
+    "inactive": "無効"
+  },
+  "mobileFilter": "フィルター",
+  "mobileFilterCount": "フィルター ({count})",
+  "resetFilters": "フィルターをリセット"
+}

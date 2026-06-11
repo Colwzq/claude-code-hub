@@ -1,0 +1,43 @@
+{
+  "pageTitle": "模型廣場",
+  "pageDescription": "查看目前可請求模型、最終計費價格和近 30 天平均成本排名。",
+  "title": "模型廣場",
+  "description": "按模型 ID 展示目前可請求模型，價格為 default 組最終價，單位為美元 / 1M tokens。多線路價格不一致時按最高價展示。",
+  "updatedAt": "資料更新：{time}",
+  "empty": "暫無符合條件的模型",
+  "tableTitle": "可用模型",
+  "tableDescription": "缺少有效輸入或輸出 token 單價的模型已隱藏；平均成本按近 30 天歷史 token 結構計算。",
+  "summary": {
+    "models": "可用模型",
+    "requests30d": "近 30 天請求",
+    "unit": "價格單位",
+    "rankedModels": "可排名模型",
+    "highestAverageCost": "最高平均成本"
+  },
+  "filters": {
+    "search": "搜尋模型 ID",
+    "allCompanies": "全部廠商"
+  },
+  "tabs": {
+    "market": "模型廣場",
+    "ranking": "價格排名"
+  },
+  "columns": {
+    "rank": "排名",
+    "model": "模型 ID",
+    "company": "廠商",
+    "averageCost": "平均成本 / 1M",
+    "input": "輸入 / 1M",
+    "output": "輸出 / 1M",
+    "cacheWrite": "快取寫入 / 1M",
+    "cacheRead": "快取讀取 / 1M",
+    "cacheHitRate": "快取命中",
+    "context": "上下文",
+    "requests30d": "近 30 天請求"
+  },
+  "ranking": {
+    "noHistory": "- 表示近 30 天沒有可用於估算的歷史 token，排在最後。",
+    "desc": "從貴到便宜",
+    "asc": "從便宜到貴"
+  }
+}

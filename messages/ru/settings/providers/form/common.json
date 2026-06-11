@@ -1,0 +1,16 @@
+{
+  "core": "Основная",
+  "tabs": {
+    "basic": "Основные",
+    "routing": "Маршрутизация",
+    "limits": "Лимиты",
+    "network": "Сеть",
+    "testing": "Тестирование",
+    "scheduling": "Планирование",
+    "options": "Параметры",
+    "activeTime": "Активное время",
+    "circuitBreaker": "Автовыключатель",
+    "timeout": "Таймаут",
+    "stepProgress": "Прогресс шагов"
+  }
+}

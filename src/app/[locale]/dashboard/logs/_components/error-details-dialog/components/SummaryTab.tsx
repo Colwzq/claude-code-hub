@@ -1,0 +1,765 @@
+"use client";
+
+import {
+  AlertCircle,
+  ArrowRight,
+  CheckCircle,
+  Clock,
+  DollarSign,
+  ExternalLink,
+  Globe,
+  InfoIcon,
+  Loader2,
+  Monitor,
+  Settings2,
+  Zap,
+} from "lucide-react";
+import { useTranslations } from "next-intl";
+import { useState } from "react";
+import { IpDetailsDialog } from "@/app/[locale]/dashboard/_components/ip-details-dialog";
+import { IpDisplayTrigger } from "@/app/[locale]/dashboard/_components/ip-display-trigger";
+import { AnthropicEffortBadge } from "@/components/customs/anthropic-effort-badge";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Link } from "@/i18n/routing";
+import { cn, formatTokenAmount } from "@/lib/utils";
+import { extractAnthropicEffortInfo } from "@/lib/utils/anthropic-effort";
+import { formatCurrency } from "@/lib/utils/currency";
+import { resolveModelAuditDisplay } from "@/lib/utils/model-audit-display";
+import {
+  getPricingResolutionSpecialSetting,
+  hasPriorityServiceTierSpecialSetting,
+} from "@/lib/utils/special-settings";
+import { getFake200ReasonKey } from "../../fake200-reason";
+import { Fake200RetryTooltip } from "../../fake200-retry-tooltip";
+import {
+  calculateOutputRate,
+  isInProgressStatus,
+  isSuccessStatus,
+  type SummaryTabProps,
+  shouldHideOutputRate,
+} from "../types";
+
+export function SummaryTab({
+  statusCode,
+  errorMessage,
+  originalModel,
+  currentModel,
+  actualResponseModel,
+  billingModelSource = "original",
+  inputTokens,
+  outputTokens,
+  cacheCreationInputTokens,
+  cacheCreation5mInputTokens,
+  cacheCreation1hInputTokens,
+  cacheReadInputTokens,
+  cacheTtlApplied,
+  swapCacheTtlApplied,
+  costUsd,
+  costMultiplier,
+  groupCostMultiplier,
+  costBreakdown,
+  context1mApplied,
+  durationMs,
+  ttfbMs,
+  sessionId,
+  requestSequence,
+  userAgent,
+  clientIp,
+  endpoint,
+  specialSettings,
+  hasMessages,
+  checkingMessages,
+  onViewLogicTrace,
+}: SummaryTabProps) {
+  const t = useTranslations("dashboard.logs.details");
+  const [ipDialogOpen, setIpDialogOpen] = useState(false);
+
+  const isSuccess = isSuccessStatus(statusCode);
+  const isInProgress = isInProgressStatus(statusCode);
+  const outputRate = calculateOutputRate(outputTokens, durationMs, ttfbMs);
+  const hideRate = shouldHideOutputRate(outputRate, durationMs, ttfbMs);
+  const totalTokens = (inputTokens ?? 0) + (outputTokens ?? 0);
+  const hasRedirect = originalModel && currentModel && originalModel !== currentModel;
+  const modelAudit = resolveModelAuditDisplay({
+    originalModel: originalModel ?? null,
+    model: currentModel ?? null,
+    actualResponseModel: actualResponseModel ?? null,
+    billingModelSource,
+  });
+  const hasAnyModel =
+    Boolean(modelAudit.effectiveRequestModel) || Boolean(modelAudit.secondaryActualModel);
+  const specialSettingsContent =
+    specialSettings && specialSettings.length > 0 ? JSON.stringify(specialSettings, null, 2) : null;
+  const pricingResolution = getPricingResolutionSpecialSetting(specialSettings);
+  const pricingSourceLabel = pricingResolution
+    ? t(`billingDetails.pricingSource.${pricingResolution.source}`)
+    : null;
+  const hasPriorityServiceTier = hasPriorityServiceTierSpecialSetting(specialSettings);
+  const effortInfo = extractAnthropicEffortInfo(specialSettings);
+  const isFake200PostStreamFailure =
+    typeof errorMessage === "string" && errorMessage.startsWith("FAKE_200_");
+  const fake200Code =
+    isFake200PostStreamFailure && errorMessage ? errorMessage.split(": ")[0] : errorMessage;
+  const fake200Reason =
+    isFake200PostStreamFailure && fake200Code
+      ? t(getFake200ReasonKey(fake200Code, "fake200Reasons"))
+      : null;
+
+  // Resolve per-TTL cache creation costs for display. Strategy:
+  //  1. Prefer the split fields (cache_creation_5m / _1h) written since the
+  //     breakdown split landed.
+  //  2. Legacy rows predate the split and only carry the aggregated
+  //     cache_creation. For mixed-TTL legacy rows we split the aggregate
+  //     proportionally by token count so neither row gets double-counted
+  //     and neither attribute zero. Pure-5m / pure-1h legacy rows route the
+  //     aggregate to the matching row.
+  const resolveCacheCreationSplit = () => {
+    if (!costBreakdown) return { fiveM: null as string | null, oneH: null as string | null };
+
+    const has5m = costBreakdown.cache_creation_5m !== undefined;
+    const has1h = costBreakdown.cache_creation_1h !== undefined;
+    if (has5m || has1h) {
+      return {
+        fiveM: costBreakdown.cache_creation_5m ?? "0",
+        oneH: costBreakdown.cache_creation_1h ?? "0",
+      };
+    }
+
+    // Legacy: only aggregate cache_creation is available.
+    const aggregate = costBreakdown.cache_creation;
+    const aggregateNum = Number(aggregate);
+    if (!Number.isFinite(aggregateNum) || aggregateNum === 0) {
+      return { fiveM: "0", oneH: "0" };
+    }
+
+    const tokens5m = cacheCreation5mInputTokens ?? 0;
+    const tokens1h = cacheCreation1hInputTokens ?? 0;
+    if (cacheTtlApplied === "mixed" && tokens5m + tokens1h > 0) {
+      // Proportional split by token count (prices differ 1.25x vs 2x but for
+      // a post-hoc legacy display this approximation is close enough).
+      const total = tokens5m + tokens1h;
+      const share5m = (aggregateNum * tokens5m) / total;
+      const share1h = aggregateNum - share5m;
+      return { fiveM: share5m.toString(), oneH: share1h.toString() };
+    }
+
+    if (cacheTtlApplied === "1h") {
+      return { fiveM: "0", oneH: aggregate };
+    }
+    // Default / 5m case
+    return { fiveM: aggregate, oneH: "0" };
+  };
+
+  const cacheSplit = resolveCacheCreationSplit();
+
+  return (
+    <div className="space-y-6">
+      {/* Status Hero */}
+      <div
+        className={cn(
+          "flex items-center gap-4 p-4 rounded-lg border",
+          isInProgress && "bg-muted/50 border-muted",
+          isSuccess &&
+            "bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800",
+          !isInProgress &&
+            !isSuccess &&
+            "bg-rose-50 dark:bg-rose-950/20 border-rose-200 dark:border-rose-800"
+        )}
+      >
+        <div
+          className={cn(
+            "flex h-12 w-12 items-center justify-center rounded-full",
+            isInProgress && "bg-muted",
+            isSuccess && "bg-emerald-100 dark:bg-emerald-900/30",
+            !isInProgress && !isSuccess && "bg-rose-100 dark:bg-rose-900/30"
+          )}
+        >
+          {isInProgress ? (
+            <Loader2 className="h-6 w-6 text-muted-foreground animate-spin" />
+          ) : isSuccess ? (
+            <CheckCircle className="h-6 w-6 text-emerald-600" />
+          ) : (
+            <AlertCircle className="h-6 w-6 text-rose-600" />
+          )}
+        </div>
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-lg font-semibold">
+              {isInProgress ? t("inProgress") : statusCode || t("unknown")}
+            </span>
+            {statusCode && (
+              <Badge variant={isSuccess ? "default" : "destructive"} className="text-xs">
+                {isSuccess ? "OK" : "Error"}
+              </Badge>
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {isInProgress ? t("processing") : isSuccess ? t("success") : t("error")}
+          </p>
+        </div>
+      </div>
+
+      {/* Key Metrics Grid */}
+      {(costUsd || totalTokens > 0 || durationMs || (outputRate && !hideRate)) && (
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold text-muted-foreground">{t("summary.keyMetrics")}</h4>
+          <div className="grid grid-cols-2 gap-3">
+            {/* Total Cost */}
+            {costUsd && (
+              <div className="flex items-center gap-3 p-3 rounded-lg border bg-card">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 dark:bg-emerald-900/30">
+                  <DollarSign className="h-4 w-4 text-emerald-600" />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">{t("summary.totalCost")}</p>
+                  <p className="text-sm font-semibold font-mono">
+                    {formatCurrency(costUsd, "USD", 6)}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Total Tokens */}
+            {totalTokens > 0 && (
+              <div className="flex items-center gap-3 p-3 rounded-lg border bg-card">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-900/30">
+                  <Zap className="h-4 w-4 text-blue-600" />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">{t("summary.totalTokens")}</p>
+                  <p className="text-sm font-semibold font-mono">
+                    {formatTokenAmount(totalTokens)}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Duration */}
+            {durationMs !== null && durationMs !== undefined && (
+              <div className="flex items-center gap-3 p-3 rounded-lg border bg-card">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-purple-100 dark:bg-purple-900/30">
+                  <Clock className="h-4 w-4 text-purple-600" />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">{t("summary.duration")}</p>
+                  <p className="text-sm font-semibold font-mono">
+                    {durationMs >= 1000
+                      ? `${(durationMs / 1000).toFixed(2)}s`
+                      : `${Math.round(durationMs)}ms`}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Output Rate */}
+            {outputRate !== null && !hideRate && (
+              <div className="flex items-center gap-3 p-3 rounded-lg border bg-card">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 dark:bg-amber-900/30">
+                  <Zap className="h-4 w-4 text-amber-600" />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">{t("summary.outputRate")}</p>
+                  <p className="text-sm font-semibold font-mono">{outputRate.toFixed(1)} tok/s</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Session Info */}
+      {(sessionId || effortInfo) && (
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold">{t("metadata.sessionInfo")}</h4>
+          <div className="rounded-lg border bg-card divide-y">
+            {sessionId && (
+              <div className="p-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <code className="text-xs font-mono break-all">{sessionId}</code>
+                      {requestSequence && (
+                        <Badge variant="outline" className="text-xs shrink-0">
+                          #{requestSequence}
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                  {hasMessages && !checkingMessages && (
+                    <Link
+                      href={
+                        requestSequence
+                          ? `/dashboard/sessions/${sessionId}/messages?seq=${requestSequence}`
+                          : `/dashboard/sessions/${sessionId}/messages`
+                      }
+                    >
+                      <Button variant="outline" size="sm">
+                        <ExternalLink className="h-4 w-4 mr-2" />
+                        {t("viewDetails")}
+                      </Button>
+                    </Link>
+                  )}
+                </div>
+              </div>
+            )}
+            {effortInfo && (
+              <div className="p-4">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs text-muted-foreground">{t("effort.label")}:</span>
+                  <AnthropicEffortBadge
+                    effort={effortInfo.originalEffort}
+                    label={effortInfo.originalEffort}
+                  />
+                  {effortInfo.isOverridden && effortInfo.overriddenEffort && (
+                    <>
+                      <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                      <AnthropicEffortBadge
+                        effort={effortInfo.overriddenEffort}
+                        label={effortInfo.overriddenEffort}
+                      />
+                    </>
+                  )}
+                </div>
+                {effortInfo.isOverridden && (
+                  <p className="text-[11px] text-muted-foreground mt-1">{t("effort.overridden")}</p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Client Info */}
+      {(userAgent || endpoint || clientIp) && (
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold flex items-center gap-2">
+            <Monitor className="h-4 w-4 text-blue-600" />
+            {t("metadata.clientInfo")}
+          </h4>
+          <div className="rounded-lg border bg-card divide-y">
+            {clientIp && (
+              <div className="p-3">
+                <p className="text-xs text-muted-foreground mb-1">IP</p>
+                <IpDisplayTrigger
+                  ip={clientIp}
+                  onClick={() => setIpDialogOpen(true)}
+                  buttonClassName="max-w-full"
+                  textClassName="text-xs underline-offset-2 hover:text-primary"
+                />
+              </div>
+            )}
+            {userAgent && (
+              <div className="p-3">
+                <p className="text-xs text-muted-foreground mb-1">User-Agent</p>
+                <code className="text-xs font-mono break-all">{userAgent}</code>
+              </div>
+            )}
+            {endpoint && (
+              <div className="p-3">
+                <p className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                  <Globe className="h-3 w-3" />
+                  Endpoint
+                </p>
+                <code className="text-xs font-mono break-all">{endpoint}</code>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Billing Details */}
+      {costUsd && (
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold flex items-center gap-2">
+            <DollarSign className="h-4 w-4 text-emerald-600" />
+            {t("metadata.billingInfo")}
+          </h4>
+          <div className="rounded-lg border bg-card p-4 space-y-3">
+            {/* Token breakdown with optional per-component costs */}
+            <div className="space-y-2 text-sm">
+              {/* Input */}
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">{t("billingDetails.input")}:</span>
+                <span className="font-mono">
+                  {formatTokenAmount(inputTokens)} {t("billingDetails.unit.tokens")}
+                  {costBreakdown ? (
+                    <span className="ml-3 text-muted-foreground">
+                      {formatCurrency(costBreakdown.input, "USD", 6)}
+                    </span>
+                  ) : null}
+                </span>
+              </div>
+
+              {/* Output */}
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">{t("billingDetails.output")}:</span>
+                <span className="font-mono">
+                  {formatTokenAmount(outputTokens)} {t("billingDetails.unit.tokens")}
+                  {costBreakdown ? (
+                    <span className="ml-3 text-muted-foreground">
+                      {formatCurrency(costBreakdown.output, "USD", 6)}
+                    </span>
+                  ) : null}
+                </span>
+              </div>
+
+              {/* Cache Write 5m */}
+              {((cacheCreation5mInputTokens ?? 0) > 0 ||
+                ((cacheCreationInputTokens ?? 0) > 0 && cacheTtlApplied !== "1h")) && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">{t("billingDetails.cacheWrite5m")}:</span>
+                  <span className="font-mono">
+                    {formatTokenAmount(
+                      (cacheCreation5mInputTokens ?? 0) > 0
+                        ? cacheCreation5mInputTokens
+                        : cacheCreationInputTokens
+                    )}{" "}
+                    {t("billingDetails.unit.tokens")}{" "}
+                    <span className="text-orange-600">(1.25x)</span>
+                    {costBreakdown && cacheSplit.fiveM !== null ? (
+                      <span className="ml-3 text-muted-foreground">
+                        {formatCurrency(cacheSplit.fiveM, "USD", 6)}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              )}
+
+              {/* Cache Write 1h */}
+              {((cacheCreation1hInputTokens ?? 0) > 0 ||
+                ((cacheCreationInputTokens ?? 0) > 0 && cacheTtlApplied === "1h")) && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">{t("billingDetails.cacheWrite1h")}:</span>
+                  <span className="font-mono">
+                    {formatTokenAmount(
+                      (cacheCreation1hInputTokens ?? 0) > 0
+                        ? cacheCreation1hInputTokens
+                        : cacheCreationInputTokens
+                    )}{" "}
+                    {t("billingDetails.unit.tokens")} <span className="text-orange-600">(2x)</span>
+                    {costBreakdown && cacheSplit.oneH !== null ? (
+                      <span className="ml-3 text-muted-foreground">
+                        {formatCurrency(cacheSplit.oneH, "USD", 6)}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              )}
+
+              {/* Cache Read */}
+              {(cacheReadInputTokens ?? 0) > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">{t("billingDetails.cacheRead")}:</span>
+                  <span className="font-mono">
+                    {formatTokenAmount(cacheReadInputTokens)} {t("billingDetails.unit.tokens")}{" "}
+                    <span className="text-emerald-600">(0.1x)</span>
+                    {costBreakdown ? (
+                      <span className="ml-3 text-muted-foreground">
+                        {formatCurrency(costBreakdown.cache_read, "USD", 6)}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              )}
+
+              {/* Cache TTL */}
+              {cacheTtlApplied && (
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground">{t("billingDetails.cacheTtl")}:</span>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-xs",
+                      swapCacheTtlApplied
+                        ? "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-800"
+                        : ""
+                    )}
+                    title={swapCacheTtlApplied ? t("billingDetails.cacheTtlSwapped") : undefined}
+                  >
+                    {cacheTtlApplied}
+                    {swapCacheTtlApplied ? " ~" : ""}
+                  </Badge>
+                </div>
+              )}
+
+              {/* 1M Context */}
+              {context1mApplied && (
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground">{t("billingDetails.context1m")}:</span>
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      variant="outline"
+                      className="text-xs bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/30 dark:text-purple-300 dark:border-purple-800"
+                    >
+                      1M Context
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      ({t("billingDetails.context1mEnabled")})
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {hasPriorityServiceTier ? (
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground">{t("billingDetails.fast")}:</span>
+                  <Badge
+                    variant="outline"
+                    className="text-xs bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950/30 dark:text-orange-300 dark:border-orange-800"
+                  >
+                    {t("billingDetails.fastPriority")}
+                  </Badge>
+                </div>
+              ) : null}
+
+              {pricingResolution && pricingSourceLabel ? (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">
+                      {t("billingDetails.pricingProvider")}:
+                    </span>
+                    <span className="font-mono">
+                      {pricingResolution.resolvedPricingProviderKey}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">
+                      {t("billingDetails.pricingSourceLabel")}:
+                    </span>
+                    <span>{pricingSourceLabel}</span>
+                  </div>
+                </>
+              ) : null}
+
+              {/* Base Total (only when breakdown is available) */}
+              {costBreakdown ? (
+                <div className="pt-2 border-t flex justify-between">
+                  <span className="text-muted-foreground font-medium">
+                    {t("billingDetails.baseTotal")}:
+                  </span>
+                  <span className="font-mono font-medium">
+                    {formatCurrency(costBreakdown.base_total, "USD", 6)}
+                  </span>
+                </div>
+              ) : null}
+
+              {/* Provider Multiplier */}
+              {(() => {
+                if (costBreakdown) {
+                  const pm = costBreakdown.provider_multiplier;
+                  if (!Number.isFinite(pm) || pm === 1) return null;
+                  return (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">
+                        {t("billingDetails.providerMultiplier")}:
+                      </span>
+                      <span className="font-mono">{pm.toFixed(2)}x</span>
+                    </div>
+                  );
+                }
+                if (costMultiplier === "" || costMultiplier == null) return null;
+                const pm = Number(costMultiplier);
+                if (!Number.isFinite(pm) || pm === 1) return null;
+                return (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">
+                      {t("billingDetails.providerMultiplier")}:
+                    </span>
+                    <span className="font-mono">{pm.toFixed(2)}x</span>
+                  </div>
+                );
+              })()}
+
+              {/* Group Multiplier */}
+              {(() => {
+                if (costBreakdown) {
+                  const gm = costBreakdown.group_multiplier;
+                  if (!Number.isFinite(gm) || gm === 1) return null;
+                  return (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">
+                        {t("billingDetails.groupMultiplier")}:
+                      </span>
+                      <span className="font-mono">{gm.toFixed(2)}x</span>
+                    </div>
+                  );
+                }
+                if (groupCostMultiplier === "" || groupCostMultiplier == null) return null;
+                const gm = Number(groupCostMultiplier);
+                if (!Number.isFinite(gm) || gm === 1) return null;
+                return (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">
+                      {t("billingDetails.groupMultiplier")}:
+                    </span>
+                    <span className="font-mono">{gm.toFixed(2)}x</span>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Total Cost */}
+            <div className="pt-3 border-t flex justify-between items-center">
+              <span className="font-medium">{t("billingDetails.totalCost")}:</span>
+              <span className="font-mono text-lg font-semibold text-emerald-600">
+                {formatCurrency(costBreakdown?.total ?? costUsd, "USD", 6)}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Special Settings */}
+      {specialSettingsContent && (
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold flex items-center gap-2">
+            <Settings2 className="h-4 w-4 text-purple-600" />
+            {t("specialSettings.title")}
+          </h4>
+          <div className="rounded-lg border bg-card p-4">
+            <pre className="text-xs whitespace-pre-wrap break-words font-mono">
+              {specialSettingsContent}
+            </pre>
+          </div>
+        </div>
+      )}
+
+      {/* Request / Actual Response Model (audit) */}
+      {hasAnyModel && (
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold flex items-center gap-2">
+            <Settings2 className="h-4 w-4 text-slate-600" />
+            {t("modelAudit.unifiedLabel")}
+            {modelAudit.hasActualMismatch && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex items-center cursor-help text-muted-foreground">
+                      <InfoIcon className="h-3.5 w-3.5" aria-hidden />
+                      <span className="sr-only">{t("modelAudit.mismatchTooltip")}</span>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p className="text-xs max-w-xs">{t("modelAudit.mismatchTooltip")}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
+          </h4>
+          <div className="rounded-lg border bg-card p-3">
+            {modelAudit.dialogShowsSplitFields ? (
+              <div className="space-y-1.5 text-sm">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-xs text-muted-foreground min-w-[6rem]">
+                    {t("modelAudit.requestModelLabel")}
+                  </span>
+                  <code className="px-1.5 py-0.5 rounded text-xs bg-slate-100 dark:bg-slate-800">
+                    {modelAudit.effectiveRequestModel}
+                  </code>
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-xs text-muted-foreground min-w-[6rem]">
+                    {t("modelAudit.responseModelLabel")}
+                  </span>
+                  <code className="px-1.5 py-0.5 rounded text-xs bg-slate-100 dark:bg-slate-800">
+                    {modelAudit.secondaryActualModel}
+                  </code>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-baseline gap-2 text-sm">
+                <code className="px-1.5 py-0.5 rounded text-xs bg-slate-100 dark:bg-slate-800">
+                  {modelAudit.effectiveRequestModel ?? "-"}
+                </code>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Model Redirect */}
+      {hasRedirect && (
+        <div id="model-redirect-section" className="space-y-2">
+          <h4 className="text-sm font-semibold flex items-center gap-2">
+            <ArrowRight className="h-4 w-4 text-blue-600" />
+            {t("modelRedirect.title")}
+          </h4>
+          <div className="rounded-lg border bg-blue-50 dark:bg-blue-950/20 p-3">
+            <div className="flex items-center gap-2 text-sm flex-wrap">
+              <code
+                className={cn(
+                  "px-1.5 py-0.5 rounded text-xs",
+                  billingModelSource === "original"
+                    ? "bg-emerald-100 dark:bg-emerald-900/50 text-emerald-800 dark:text-emerald-200 ring-1 ring-emerald-300 dark:ring-emerald-700"
+                    : "bg-blue-100 dark:bg-blue-900/50 text-blue-800 dark:text-blue-200"
+                )}
+              >
+                {originalModel}
+              </code>
+              <ArrowRight className="h-3.5 w-3.5 text-blue-500 flex-shrink-0" />
+              <code
+                className={cn(
+                  "px-1.5 py-0.5 rounded text-xs",
+                  billingModelSource === "redirected"
+                    ? "bg-emerald-100 dark:bg-emerald-900/50 text-emerald-800 dark:text-emerald-200 ring-1 ring-emerald-300 dark:ring-emerald-700"
+                    : "bg-blue-100 dark:bg-blue-900/50 text-blue-800 dark:text-blue-200"
+                )}
+              >
+                {currentModel}
+              </code>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              {billingModelSource === "original"
+                ? t("modelRedirect.billingOriginal")
+                : t("modelRedirect.billingRedirected")}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Error Summary */}
+      {errorMessage && (
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 text-rose-600" />
+            {t("errorMessage")}
+          </h4>
+          <div className="rounded-lg border bg-rose-50 dark:bg-rose-950/20 p-3">
+            <p className="text-xs text-rose-800 dark:text-rose-200 line-clamp-3 font-mono">
+              {errorMessage.length > 200 ? `${errorMessage.slice(0, 200)}...` : errorMessage}
+            </p>
+            {isFake200PostStreamFailure && fake200Reason && (
+              <p className="mt-2 text-[11px] text-rose-800 dark:text-rose-200">
+                {t("fake200DetectedReason", { reason: fake200Reason })}
+              </p>
+            )}
+            {/* 注意：假 200 检测发生在 SSE 流式结束后；此时内容已可能透传给客户端，因此需要提示用户避免误解。 */}
+            {isFake200PostStreamFailure && (
+              <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-200">
+                <InfoIcon className="h-3.5 w-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+                <div className="space-y-1">
+                  <div>{t("fake200ForwardedNotice")}</div>
+                  <Fake200RetryTooltip className="text-amber-800 dark:text-amber-200" />
+                </div>
+              </div>
+            )}
+            {errorMessage.length > 200 && onViewLogicTrace && (
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto p-0 mt-2 text-xs"
+                onClick={onViewLogicTrace}
+              >
+                {t("summary.viewFullError")}
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <IpDetailsDialog ip={clientIp ?? null} open={ipDialogOpen} onOpenChange={setIpDialogOpen} />
+    </div>
+  );
+}

@@ -1,0 +1,689 @@
+import { getCachedSystemSettings } from "@/lib/config/system-settings-cache";
+import {
+  isClaudeErrorFormat,
+  isGeminiErrorFormat,
+  isOpenAIErrorFormat,
+  isValidErrorOverrideResponse,
+} from "@/lib/error-override-validator";
+import { emitProxyLangfuseTrace } from "@/lib/langfuse/emit-proxy-trace";
+import { logger } from "@/lib/logger";
+import { ProxyStatusTracker } from "@/lib/proxy-status-tracker";
+import { sanitizeErrorTextForDetail } from "@/lib/utils/upstream-error-detection";
+import { updateMessageRequestDetails, updateMessageRequestDuration } from "@/repository/message";
+import type { SystemSettings } from "@/types/system-config";
+import { deriveClientSafeUpstreamErrorMessage } from "./client-error-message";
+import { attachSessionIdToErrorResponse } from "./error-session-id";
+import {
+  ALL_PROVIDERS_UNAVAILABLE_MESSAGE,
+  getErrorOverrideAsync,
+  isEmptyResponseError,
+  isRateLimitError,
+  ProxyError,
+  type RateLimitError,
+} from "./errors";
+import { ProxyResponses } from "./responses";
+import type { ProxySession } from "./session";
+
+/** 覆写状态码最小值 */
+const OVERRIDE_STATUS_CODE_MIN = 400;
+/** 覆写状态码最大值 */
+const OVERRIDE_STATUS_CODE_MAX = 599;
+
+type ErrorOverrideForMessageResolver = { response?: unknown; statusCode?: number | null } | null;
+
+function stripUpstreamDetailSuffix(message: string): string {
+  return message.replace(/\s+Upstream detail:\s*[\s\S]*$/u, "").trim() || message;
+}
+
+function getErrorResponseText(error: unknown): string {
+  if (!(error instanceof ProxyError)) {
+    return "";
+  }
+
+  // Langfuse trace 用于排查上游故障，按产品预期保留原始上游错误主体。
+  return error.upstreamError?.rawBody ?? error.upstreamError?.body ?? "";
+}
+
+function isRequestStreaming(session: ProxySession): boolean {
+  const requestUrl = session.requestUrl;
+
+  return (
+    session.request?.message?.stream === true ||
+    requestUrl?.pathname.includes("streamGenerateContent") ||
+    requestUrl?.searchParams.get("alt") === "sse"
+  );
+}
+
+function getGenericProxyErrorFallbackMessage(
+  statusCode: number,
+  error: unknown,
+  fallback: string
+): string {
+  if (isEmptyResponseError(error)) {
+    return fallback;
+  }
+
+  if (!(error instanceof ProxyError)) {
+    return fallback;
+  }
+
+  if (fallback === ALL_PROVIDERS_UNAVAILABLE_MESSAGE) {
+    return fallback;
+  }
+
+  if (error.message.startsWith("FAKE_200_")) {
+    return fallback;
+  }
+
+  switch (statusCode) {
+    case 400:
+      return "上游请求参数无效，请检查后重试";
+    case 401:
+      return "上游鉴权失败，请稍后重试";
+    case 402:
+      return "上游服务当前无法处理该请求";
+    case 403:
+      return "上游拒绝了本次请求";
+    case 404:
+      return "上游资源不存在";
+    case 408:
+    case 504:
+    case 524:
+      return "上游服务响应超时，请稍后重试";
+    case 409:
+      return "上游请求发生冲突，请稍后重试";
+    case 413:
+      return "请求内容过大，上游无法处理";
+    case 415:
+      return "上游不支持当前请求格式";
+    case 422:
+      return "上游无法处理当前请求";
+    case 429:
+      return "上游服务当前限流，请稍后重试";
+    default:
+      if (statusCode >= 500) {
+        return "上游服务暂时不可用，请稍后重试";
+      }
+      return "请求上游服务失败，请稍后重试";
+  }
+}
+
+export function resolveFinalClientErrorMessage({
+  error,
+  currentFallbackMessage,
+  settings,
+  override,
+}: {
+  error: unknown;
+  currentFallbackMessage: string;
+  settings?: Pick<SystemSettings, "passThroughUpstreamErrorMessage"> | null;
+  override?: ErrorOverrideForMessageResolver;
+}): string {
+  if (override?.response) {
+    return currentFallbackMessage;
+  }
+
+  const strippedFallback =
+    error instanceof ProxyError || isEmptyResponseError(error)
+      ? stripUpstreamDetailSuffix(currentFallbackMessage)
+      : currentFallbackMessage;
+  const fallback = getGenericProxyErrorFallbackMessage(
+    error instanceof ProxyError ? error.statusCode : 500,
+    error,
+    strippedFallback
+  );
+  const shouldPassThrough = settings?.passThroughUpstreamErrorMessage ?? true;
+  if (!shouldPassThrough) {
+    return fallback;
+  }
+
+  if (error instanceof ProxyError) {
+    return (
+      deriveClientSafeUpstreamErrorMessage({
+        rawText: error.upstreamError?.rawBody,
+        candidateMessage:
+          error.upstreamError?.safeClientMessageCandidate ??
+          error.upstreamError?.body ??
+          error.message,
+        providerName: error.upstreamError?.providerName ?? null,
+      }) ?? fallback
+    );
+  }
+
+  if (isEmptyResponseError(error)) {
+    return fallback;
+  }
+
+  return fallback;
+}
+
+/**
+ * 根据限流类型计算 HTTP 状态码
+ * - RPM/并发用 429 Too Many Requests（可重试的频率控制）
+ * - 消费限额用 402 Payment Required（需充值/等待重置）
+ */
+function getRateLimitStatusCode(limitType: string): number {
+  return limitType === "rpm" || limitType === "concurrent_sessions" ? 429 : 402;
+}
+
+export class ProxyErrorHandler {
+  static async handle(session: ProxySession, error: unknown): Promise<Response> {
+    // 分离两种消息：
+    // - clientErrorMessage: 返回给客户端的安全消息（不含供应商名称）
+    // - logErrorMessage: 记录到数据库的详细消息（包含供应商名称，便于排查）
+    let clientErrorMessage: string;
+    let logErrorMessage: string;
+    let statusCode = 500;
+    let rateLimitMetadata: Record<string, unknown> | null = null;
+    let settingsResolved = false;
+    let cachedSettings: SystemSettings | null = null;
+
+    const getSettings = async (): Promise<SystemSettings | null> => {
+      if (settingsResolved) return cachedSettings;
+      try {
+        cachedSettings = await getCachedSystemSettings();
+        settingsResolved = true;
+        return cachedSettings;
+      } catch (settingsError) {
+        settingsResolved = true;
+        logger.warn("ProxyErrorHandler: failed to load system settings, using defaults", {
+          error: settingsError instanceof Error ? settingsError.message : String(settingsError),
+        });
+        return null;
+      }
+    };
+
+    // 优先处理 RateLimitError（新增）
+    if (isRateLimitError(error)) {
+      clientErrorMessage = error.message;
+      logErrorMessage = error.message;
+      // 使用 helper 函数计算状态码
+      statusCode = getRateLimitStatusCode(error.limitType);
+      rateLimitMetadata = error.toJSON();
+
+      // 构建详细的 402 响应
+      const response = ProxyErrorHandler.buildRateLimitResponse(error);
+
+      ProxyErrorHandler.emitErrorTrace(session, {
+        error,
+        errorMessage: logErrorMessage,
+        statusCode,
+      });
+
+      // 记录错误到数据库（包含 rate_limit 元数据）
+      await ProxyErrorHandler.logErrorToDatabase(
+        session,
+        logErrorMessage,
+        statusCode,
+        rateLimitMetadata
+      );
+
+      return await attachSessionIdToErrorResponse(session.sessionId, response);
+    }
+
+    // 识别 ProxyError，提取详细信息（包含上游响应）
+    if (error instanceof ProxyError) {
+      // 客户端消息：不含供应商名称，保护敏感信息
+      clientErrorMessage = error.getClientSafeMessage();
+      // 日志消息：包含供应商名称，便于问题排查
+      logErrorMessage = error.getDetailedErrorMessage();
+      statusCode = error.statusCode; // 使用实际状态码（不再统一 5xx 为 500）
+    } else if (isEmptyResponseError(error)) {
+      // EmptyResponseError: 客户端消息不含供应商名称
+      clientErrorMessage = error.getClientSafeMessage();
+      logErrorMessage = error.message; // 日志保留完整信息
+      statusCode = 502; // Bad Gateway
+    } else if (error instanceof Error) {
+      clientErrorMessage = error.message;
+      logErrorMessage = error.message;
+    } else {
+      clientErrorMessage = "代理请求发生未知错误";
+      logErrorMessage = "代理请求发生未知错误";
+    }
+
+    // 后备方案：如果状态码仍是 500，尝试从 provider chain 中提取最后一次实际请求的状态码
+    if (statusCode === 500) {
+      const lastRequestStatusCode = ProxyErrorHandler.getLastRequestStatusCode(session);
+      if (lastRequestStatusCode && lastRequestStatusCode !== 200) {
+        statusCode = lastRequestStatusCode;
+      }
+    }
+
+    const finalizeErrorResponse = async (
+      response: Response,
+      traceErrorMessage: string,
+      options: { traceFinalResponseBody?: boolean } = {}
+    ) => {
+      const finalResponse = await attachSessionIdToErrorResponse(session.sessionId, response);
+      let responseText: string | undefined;
+      if (options.traceFinalResponseBody) {
+        try {
+          responseText = await finalResponse.clone().text();
+        } catch {
+          responseText = undefined;
+        }
+      }
+      ProxyErrorHandler.emitErrorTrace(session, {
+        error,
+        errorMessage: traceErrorMessage,
+        statusCode: finalResponse.status,
+        responseText,
+      });
+      // 先发出 trace，再写数据库，避免 DB 持久化失败吞掉本次错误诊断。
+      await ProxyErrorHandler.logErrorToDatabase(
+        session,
+        logErrorMessage,
+        finalResponse.status,
+        null
+      );
+      return finalResponse;
+    };
+
+    // 检测是否有覆写配置（响应体或状态码）
+    // 使用异步版本确保错误规则已加载
+    if (error instanceof Error) {
+      const override = await getErrorOverrideAsync(error);
+      if (override) {
+        // 运行时校验覆写状态码范围（400-599），防止数据库脏数据导致 Response 抛 RangeError
+        let validatedStatusCode = override.statusCode;
+        if (
+          validatedStatusCode !== null &&
+          (!Number.isInteger(validatedStatusCode) ||
+            validatedStatusCode < OVERRIDE_STATUS_CODE_MIN ||
+            validatedStatusCode > OVERRIDE_STATUS_CODE_MAX)
+        ) {
+          logger.warn("ProxyErrorHandler: Invalid override status code, falling back to upstream", {
+            overrideStatusCode: validatedStatusCode,
+            upstreamStatusCode: statusCode,
+          });
+          validatedStatusCode = null;
+        }
+
+        // 使用覆写状态码，如果未配置或无效则使用上游状态码
+        const responseStatusCode = validatedStatusCode ?? statusCode;
+        const settings = await getSettings();
+
+        // 提取上游 request_id（用于覆写场景透传）
+        const upstreamRequestId =
+          error instanceof ProxyError ? error.upstreamError?.requestId : undefined;
+        const safeRequestId = typeof upstreamRequestId === "string" ? upstreamRequestId : undefined;
+
+        // 情况 1: 有响应体覆写 - 返回覆写的 JSON 响应
+        if (override.response) {
+          // 运行时守卫：验证覆写响应格式是否合法（双重保护，加载时已过滤一次）
+          // 防止数据库中存在畸形数据导致返回不合规响应
+          if (!isValidErrorOverrideResponse(override.response)) {
+            logger.warn("ProxyErrorHandler: Invalid override response in database, skipping", {
+              response: JSON.stringify(override.response).substring(0, 200),
+            });
+            // 跳过响应体覆写，但仍可应用状态码覆写
+            if (override.statusCode !== null) {
+              const finalClientErrorMessage = resolveFinalClientErrorMessage({
+                error,
+                currentFallbackMessage: clientErrorMessage,
+                settings,
+                override: { response: null, statusCode: override.statusCode },
+              });
+              return await finalizeErrorResponse(
+                ProxyResponses.buildError(
+                  responseStatusCode,
+                  finalClientErrorMessage,
+                  undefined,
+                  undefined,
+                  safeRequestId
+                ),
+                finalClientErrorMessage,
+                { traceFinalResponseBody: true }
+              );
+            }
+            // 两者都无效，返回原始错误（但仍透传 request_id，因为有覆写意图）
+            const finalClientErrorMessage = resolveFinalClientErrorMessage({
+              error,
+              currentFallbackMessage: clientErrorMessage,
+              settings,
+              override: { response: null, statusCode: null },
+            });
+            return await finalizeErrorResponse(
+              ProxyResponses.buildError(
+                statusCode,
+                finalClientErrorMessage,
+                undefined,
+                undefined,
+                safeRequestId
+              ),
+              finalClientErrorMessage,
+              { traceFinalResponseBody: true }
+            );
+          }
+
+          // 覆写消息为空时回退到客户端安全消息
+          const overrideErrorObj = override.response.error as Record<string, unknown>;
+          const hasExplicitOverrideMessage =
+            typeof overrideErrorObj?.message === "string" &&
+            overrideErrorObj.message.trim().length > 0;
+          const overrideMessage = hasExplicitOverrideMessage
+            ? overrideErrorObj.message
+            : clientErrorMessage;
+
+          // 构建覆写响应体
+          // 设计原则：只输出用户配置的字段，不额外注入 request_id 等字段
+          // 唯一的特殊处理：message 为空时回退到原始错误消息
+          const finalClientErrorMessage = resolveFinalClientErrorMessage({
+            error,
+            currentFallbackMessage: clientErrorMessage,
+            settings,
+            override: hasExplicitOverrideMessage ? override : null,
+          });
+          const responseBody = {
+            ...override.response,
+            error: {
+              ...overrideErrorObj,
+              message:
+                overrideMessage === clientErrorMessage ? finalClientErrorMessage : overrideMessage,
+            },
+          };
+
+          logger.info("ProxyErrorHandler: Applied error override response", {
+            original: logErrorMessage.substring(0, 200),
+            format: isClaudeErrorFormat(override.response)
+              ? "claude"
+              : isGeminiErrorFormat(override.response)
+                ? "gemini"
+                : isOpenAIErrorFormat(override.response)
+                  ? "openai"
+                  : "unknown",
+            statusCode: responseStatusCode,
+          });
+
+          logger.error("ProxyErrorHandler: Request failed (overridden)", {
+            error: logErrorMessage,
+            statusCode: responseStatusCode,
+            overridden: true,
+          });
+
+          return await finalizeErrorResponse(
+            new Response(JSON.stringify(responseBody), {
+              status: responseStatusCode,
+              headers: { "Content-Type": "application/json" },
+            }),
+            String(responseBody.error.message),
+            { traceFinalResponseBody: true }
+          );
+        }
+
+        // 情况 2: 仅状态码覆写 - 返回客户端安全消息，但使用覆写的状态码
+        logger.info("ProxyErrorHandler: Applied status code override only", {
+          original: logErrorMessage.substring(0, 200),
+          originalStatusCode: statusCode,
+          overrideStatusCode: responseStatusCode,
+          hasRequestId: !!safeRequestId,
+        });
+
+        logger.error("ProxyErrorHandler: Request failed (status overridden)", {
+          error: logErrorMessage,
+          statusCode: responseStatusCode,
+          overridden: true,
+        });
+
+        const finalClientErrorMessage = resolveFinalClientErrorMessage({
+          error,
+          currentFallbackMessage: clientErrorMessage,
+          settings,
+          override: { response: null, statusCode: override.statusCode },
+        });
+
+        return await finalizeErrorResponse(
+          ProxyResponses.buildError(
+            responseStatusCode,
+            finalClientErrorMessage,
+            undefined,
+            undefined,
+            safeRequestId
+          ),
+          finalClientErrorMessage,
+          { traceFinalResponseBody: true }
+        );
+      }
+    }
+
+    logger.error("ProxyErrorHandler: Request failed", {
+      error: logErrorMessage,
+      statusCode,
+      overridden: false,
+    });
+
+    // verboseProviderError（系统设置）开启时：对“假 200/空响应”等上游异常返回更详细的报告，便于排查。
+    // 注意：
+    // - 该逻辑放在 error override 之后：确保优先级更低，不覆盖用户自定义覆写。
+    // - rawBody 仅用于本次错误响应回传（受系统设置控制），不写入数据库/决策链；
+    // - 出于安全考虑，这里会对 rawBody 做基础脱敏（Bearer/key/JWT/email 等），避免上游错误页意外回显敏感信息。
+    let details: Record<string, unknown> | undefined;
+    let upstreamRequestId: string | undefined;
+    const shouldAttachVerboseDetails =
+      (error instanceof ProxyError && error.message.startsWith("FAKE_200_")) ||
+      isEmptyResponseError(error);
+
+    if (shouldAttachVerboseDetails) {
+      try {
+        const settings = await getSettings();
+        if (settings?.verboseProviderError) {
+          if (error instanceof ProxyError) {
+            upstreamRequestId = error.upstreamError?.requestId;
+            const rawBodySrc = error.upstreamError?.rawBody;
+            const rawBody =
+              typeof rawBodySrc === "string" && rawBodySrc
+                ? sanitizeErrorTextForDetail(
+                    rawBodySrc.length > 4096 ? rawBodySrc.slice(0, 4096) : rawBodySrc
+                  )
+                : rawBodySrc;
+            details = {
+              upstreamError: {
+                kind: "fake_200",
+                code: error.message,
+                statusCode: error.statusCode,
+                statusCodeInferred: error.upstreamError?.statusCodeInferred ?? false,
+                statusCodeInferenceMatcherId:
+                  error.upstreamError?.statusCodeInferenceMatcherId ?? null,
+                clientSafeMessage: error.getClientSafeMessage(),
+                rawBody,
+                rawBodyTruncated: error.upstreamError?.rawBodyTruncated ?? false,
+              },
+            };
+          } else if (isEmptyResponseError(error)) {
+            details = {
+              upstreamError: {
+                kind: "empty_response",
+                reason: error.reason,
+                clientSafeMessage: error.getClientSafeMessage(),
+                rawBody: "",
+                rawBodyTruncated: false,
+              },
+            };
+          }
+        }
+      } catch (verboseError) {
+        logger.warn("ProxyErrorHandler: failed to gather verbose details, skipping", {
+          error: verboseError instanceof Error ? verboseError.message : String(verboseError),
+        });
+      }
+    }
+
+    const safeRequestId =
+      typeof upstreamRequestId === "string" && upstreamRequestId.trim()
+        ? upstreamRequestId.trim()
+        : undefined;
+    const settings = await getSettings();
+    const finalClientErrorMessage = resolveFinalClientErrorMessage({
+      error,
+      currentFallbackMessage: clientErrorMessage,
+      settings,
+      override: null,
+    });
+
+    return await finalizeErrorResponse(
+      ProxyResponses.buildError(
+        statusCode,
+        finalClientErrorMessage,
+        undefined,
+        details,
+        safeRequestId
+      ),
+      logErrorMessage
+    );
+  }
+
+  /**
+   * 构建 Rate Limit 响应（402/429）
+   *
+   * - RPM/并发用 429 Too Many Requests（可重试的频率控制）
+   * - 消费限额用 402 Payment Required（需充值/等待重置）
+   * 返回包含所有 7 个限流字段的详细错误信息，并添加标准 rate limit 响应头
+   *
+   * 响应体字段（7个核心字段）：
+   * - error.type: "rate_limit_error"
+   * - error.message: 人类可读的错误消息
+   * - error.code: 错误代码（固定为 "rate_limit_exceeded"）
+   * - error.limit_type: 限流类型（rpm/usd_5h/usd_weekly/usd_monthly/concurrent_sessions/daily_quota）
+   * - error.current: 当前使用量
+   * - error.limit: 限制值
+   * - error.reset_time: 重置时间（ISO-8601格式，滚动窗口为 null）
+   *
+   * 响应头（标准 rate limit 头）：
+   * - X-RateLimit-Limit: 限制值
+   * - X-RateLimit-Remaining: 剩余配额（max(0, limit - current)）
+   * - X-RateLimit-Reset: Unix 时间戳（秒），滚动窗口不设置此头
+   */
+  private static buildRateLimitResponse(error: RateLimitError): Response {
+    // 使用 helper 函数计算状态码
+    const statusCode = getRateLimitStatusCode(error.limitType);
+
+    // 计算剩余配额（不能为负数）
+    const remaining = Math.max(0, error.limitValue - error.currentUsage);
+
+    const headers = new Headers({
+      "Content-Type": "application/json",
+      // 标准 rate limit 响应头
+      "X-RateLimit-Limit": error.limitValue.toString(),
+      "X-RateLimit-Remaining": remaining.toString(),
+    });
+
+    // 只有固定窗口才设置重置时间相关头（滚动窗口 resetTime 为 null）
+    if (error.resetTime !== null) {
+      const resetTimestamp = Math.floor(new Date(error.resetTime).getTime() / 1000);
+      headers.set("X-RateLimit-Reset", resetTimestamp.toString());
+      headers.set("Retry-After", ProxyErrorHandler.calculateRetryAfter(error.resetTime));
+    }
+
+    return new Response(
+      JSON.stringify({
+        error: {
+          // 保持向后兼容的核心字段
+          type: error.type,
+          message: error.message,
+          // 新增字段（按任务要求的7个字段）
+          code: "rate_limit_exceeded",
+          limit_type: error.limitType,
+          current: error.currentUsage,
+          limit: error.limitValue,
+          reset_time: error.resetTime, // 滚动窗口为 null
+        },
+      }),
+      {
+        status: statusCode, // 根据 limitType 动态选择 429 或 402
+        headers,
+      }
+    );
+  }
+
+  /**
+   * 计算 Retry-After 头（秒数）
+   * 仅用于固定窗口（有确定重置时间的场景）
+   */
+  private static calculateRetryAfter(resetTime: string): string {
+    const resetDate = new Date(resetTime);
+    const now = new Date();
+    const secondsUntilReset = Math.max(0, Math.ceil((resetDate.getTime() - now.getTime()) / 1000));
+    return secondsUntilReset.toString();
+  }
+
+  /**
+   * 记录错误到数据库
+   *
+   * 如果提供了 rateLimitMetadata，将其 JSON 序列化后存入 errorMessage
+   * 供应商决策链保持不变，存入 providerChain 字段
+   */
+  private static async logErrorToDatabase(
+    session: ProxySession,
+    errorMessage: string,
+    statusCode: number,
+    rateLimitMetadata: Record<string, unknown> | null
+  ): Promise<void> {
+    if (!session.messageContext) {
+      return;
+    }
+
+    const duration = Date.now() - session.startTime;
+    await updateMessageRequestDuration(session.messageContext.id, duration);
+
+    // 如果是限流错误，将元数据附加到错误消息中
+    let finalErrorMessage = errorMessage;
+    if (rateLimitMetadata) {
+      finalErrorMessage = `${errorMessage} | rate_limit_metadata: ${JSON.stringify(rateLimitMetadata)}`;
+    }
+
+    // 保存错误信息和决策链
+    await updateMessageRequestDetails(session.messageContext.id, {
+      errorMessage: finalErrorMessage,
+      providerChain: session.getProviderChain(),
+      statusCode: statusCode,
+      model: session.getCurrentModel() ?? undefined,
+      providerId: session.provider?.id, // ⭐ 更新最终供应商ID（重试切换后）
+      context1mApplied: session.getContext1mApplied(),
+      swapCacheTtlApplied: session.provider?.swapCacheTtlBilling ?? false,
+    });
+
+    // 记录请求结束
+    const tracker = ProxyStatusTracker.getInstance();
+    tracker.endRequest(session.messageContext.user.id, session.messageContext.id);
+  }
+
+  private static emitErrorTrace(
+    session: ProxySession,
+    data: { error: unknown; errorMessage: string; statusCode: number; responseText?: string }
+  ): void {
+    const isStreaming = isRequestStreaming(session);
+
+    emitProxyLangfuseTrace(session, {
+      responseHeaders: new Headers(),
+      responseText: data.responseText ?? getErrorResponseText(data.error),
+      usageMetrics: null,
+      costUsd: undefined,
+      statusCode: data.statusCode,
+      durationMs: Math.max(0, Date.now() - session.startTime),
+      isStreaming,
+      sseEventCount: isStreaming ? 0 : undefined,
+      errorMessage: data.errorMessage,
+    });
+  }
+
+  /**
+   * 从 provider chain 中提取最后一次实际请求的状态码
+   */
+  private static getLastRequestStatusCode(session: ProxySession): number | null {
+    const chain = session.getProviderChain();
+    if (!chain || chain.length === 0) {
+      return null;
+    }
+
+    // 从后往前遍历，找到第一个有 statusCode 的记录（retry_failed 或 request_success）
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const item = chain[i];
+      if (item.statusCode && item.statusCode !== 200) {
+        // 找到了失败的请求状态码
+        return item.statusCode;
+      }
+    }
+
+    return null;
+  }
+}

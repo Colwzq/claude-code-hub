@@ -1,0 +1,600 @@
+/**
+ * Next.js Instrumentation Hook
+ * 在服务器启动时自动执行数据库迁移
+ */
+
+import { startCacheCleanup, stopCacheCleanup } from "@/lib/cache/session-cache";
+import { logger } from "@/lib/logger";
+import { CHANNEL_API_KEYS_UPDATED, subscribeCacheInvalidation } from "@/lib/redis/pubsub";
+import { apiKeyVacuumFilter } from "@/lib/security/api-key-vacuum-filter";
+
+// instrumentation 需要 Node.js runtime（依赖数据库与 Redis 等 Node 能力）
+export const runtime = "nodejs";
+
+const instrumentationState = globalThis as unknown as {
+  __CCH_CACHE_CLEANUP_STARTED__?: boolean;
+  __CCH_SHUTDOWN_HOOKS_REGISTERED__?: boolean;
+  __CCH_SHUTDOWN_IN_PROGRESS__?: boolean;
+  __CCH_CLOUD_PRICE_SYNC_STARTED__?: boolean;
+  __CCH_CLOUD_PRICE_SYNC_INTERVAL_ID__?: ReturnType<typeof setInterval>;
+  __CCH_API_KEY_VF_SYNC_STARTED__?: boolean;
+  __CCH_API_KEY_VF_SYNC_CLEANUP__?: (() => void) | null;
+};
+
+/**
+ * 同步错误规则并初始化检测器
+ * 提取为独立函数以避免代码重复
+ *
+ * 每次启动都会同步 DEFAULT_ERROR_RULES 到数据库，采用"用户自定义优先"策略：
+ * - pattern 不存在：插入新规则
+ * - pattern 存在且 isDefault=true：更新为最新默认规则
+ * - pattern 存在且 isDefault=false：跳过（保留用户的自定义版本）
+ *
+ * 注意: 此函数会传播关键错误,调用者应决定是否需要优雅降级
+ */
+async function syncErrorRulesAndInitializeDetector(): Promise<void> {
+  // 同步默认错误规则到数据库 - 每次启动都完整同步
+  const { syncDefaultErrorRules } = await import("@/repository/error-rules");
+  const syncResult = await syncDefaultErrorRules();
+  logger.info(
+    `Default error rules synced: ${syncResult.inserted} inserted, ${syncResult.updated} updated, ${syncResult.skipped} skipped, ${syncResult.deleted} deleted`
+  );
+
+  // 加载错误规则缓存 - 让关键错误传播
+  const { errorRuleDetector } = await import("@/lib/error-rule-detector");
+  await errorRuleDetector.reload();
+  logger.info("Error rule detector cache loaded successfully");
+}
+
+/**
+ * 启动云端价格表定时同步（每 30 分钟一次）。
+ *
+ * 约束：
+ * - 使用 globalThis 状态去重，避免开发环境热重载重复注册
+ * - 失败不阻塞启动，仅记录日志
+ */
+async function startCloudPriceSyncScheduler(): Promise<void> {
+  if (instrumentationState.__CCH_CLOUD_PRICE_SYNC_STARTED__) {
+    return;
+  }
+
+  try {
+    const { requestCloudPriceTableSync } = await import("@/lib/price-sync/cloud-price-updater");
+    const intervalMs = 30 * 60 * 1000;
+
+    // 启动后立即触发一次（避免首次 30 分钟空窗期）
+    requestCloudPriceTableSync({ reason: "scheduled", throttleMs: 0 });
+
+    instrumentationState.__CCH_CLOUD_PRICE_SYNC_INTERVAL_ID__ = setInterval(() => {
+      try {
+        requestCloudPriceTableSync({ reason: "scheduled", throttleMs: 0 });
+      } catch (error) {
+        logger.warn("[Instrumentation] Cloud price sync scheduler tick failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }, intervalMs);
+
+    instrumentationState.__CCH_CLOUD_PRICE_SYNC_STARTED__ = true;
+    logger.info("[Instrumentation] Cloud price sync scheduler started", {
+      intervalSeconds: intervalMs / 1000,
+    });
+  } catch (error) {
+    logger.warn("[Instrumentation] Cloud price sync scheduler init failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * 多实例：订阅 API Key 变更广播，触发本机 Vacuum Filter 失效并重建。
+ *
+ * 目标：
+ * - 避免“本机 filter 漏包含新 key”导致的误拒绝
+ * - 重建失败/Redis 未配置时自动降级（不阻塞启动）
+ */
+async function startApiKeyVacuumFilterSync(): Promise<void> {
+  if (instrumentationState.__CCH_API_KEY_VF_SYNC_STARTED__) {
+    return;
+  }
+
+  // 与 Redis client 的启用条件保持一致：未启用限流/未配置 Redis 时不尝试订阅，避免额外 warn 日志
+  const rateLimitRaw = process.env.ENABLE_RATE_LIMIT?.trim();
+  if (rateLimitRaw === "false" || rateLimitRaw === "0" || !process.env.REDIS_URL) {
+    return;
+  }
+
+  try {
+    const cleanup = await subscribeCacheInvalidation(CHANNEL_API_KEYS_UPDATED, () => {
+      apiKeyVacuumFilter.invalidateAndReload({ reason: "api_keys_updated" });
+    });
+
+    if (!cleanup) {
+      return;
+    }
+
+    instrumentationState.__CCH_API_KEY_VF_SYNC_STARTED__ = true;
+    instrumentationState.__CCH_API_KEY_VF_SYNC_CLEANUP__ = cleanup;
+    logger.info("[Instrumentation] API Key Vacuum Filter sync enabled");
+  } catch (error) {
+    logger.warn("[Instrumentation] API Key Vacuum Filter sync init failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function warmupApiKeyVacuumFilter(): void {
+  // 预热 API Key Vacuum Filter（减少无效 key 对 DB 的压力）
+  try {
+    apiKeyVacuumFilter.startBackgroundReload({ reason: "startup" });
+  } catch (error) {
+    logger.warn("[Instrumentation] Failed to start API key vacuum filter preload", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  // 多实例：订阅 key 变更广播以触发本机 filter 重建
+  void startApiKeyVacuumFilterSync();
+}
+
+export async function register() {
+  // 仅在服务器端执行
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    // Initialize Langfuse observability (no-op if env vars not set)
+    try {
+      const { initLangfuse } = await import("@/lib/langfuse");
+      await initLangfuse();
+    } catch (error) {
+      logger.warn("[Instrumentation] Langfuse initialization failed (non-critical)", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // Skip initialization in CI environment (no DB connection needed)
+    if (process.env.CI === "true") {
+      logger.warn(
+        "[Instrumentation] CI environment detected: skipping DB migrations, price seeding and queue scheduling"
+      );
+      return;
+    }
+
+    if (!instrumentationState.__CCH_CACHE_CLEANUP_STARTED__) {
+      startCacheCleanup(60);
+      instrumentationState.__CCH_CACHE_CLEANUP_STARTED__ = true;
+      logger.info("[Instrumentation] Session cache cleanup started", {
+        intervalSeconds: 60,
+      });
+    }
+
+    if (!instrumentationState.__CCH_SHUTDOWN_HOOKS_REGISTERED__) {
+      instrumentationState.__CCH_SHUTDOWN_HOOKS_REGISTERED__ = true;
+
+      const shutdownHandler = async (signal: string) => {
+        if (instrumentationState.__CCH_SHUTDOWN_IN_PROGRESS__) {
+          return;
+        }
+        instrumentationState.__CCH_SHUTDOWN_IN_PROGRESS__ = true;
+
+        logger.info(`[Instrumentation] Received ${signal}, cleaning up...`);
+
+        try {
+          stopCacheCleanup();
+          instrumentationState.__CCH_CACHE_CLEANUP_STARTED__ = false;
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to stop cache cleanup", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        try {
+          instrumentationState.__CCH_API_KEY_VF_SYNC_CLEANUP__?.();
+          instrumentationState.__CCH_API_KEY_VF_SYNC_STARTED__ = false;
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to cleanup API key vacuum filter sync", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        try {
+          const { stopEndpointProbeScheduler } = await import(
+            "@/lib/provider-endpoints/probe-scheduler"
+          );
+          stopEndpointProbeScheduler();
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to stop endpoint probe scheduler", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        try {
+          const { stopPublicStatusRebuildScheduler } = await import(
+            "@/lib/public-status/scheduler"
+          );
+          await stopPublicStatusRebuildScheduler();
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to stop public status rebuild scheduler", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        try {
+          const { stopEndpointProbeLogCleanup } = await import(
+            "@/lib/provider-endpoints/probe-log-cleanup"
+          );
+          stopEndpointProbeLogCleanup();
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to stop endpoint probe log cleanup", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        try {
+          const { closeRedis } = await import("@/lib/redis");
+          await closeRedis();
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to close Redis connection", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        // Flush Langfuse pending spans
+        try {
+          const { shutdownLangfuse } = await import("@/lib/langfuse");
+          await shutdownLangfuse();
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to shutdown Langfuse", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        // 尽力将 message_request 的异步批量更新刷入数据库（避免终止时丢失尾部日志）
+        try {
+          const { stopMessageRequestWriteBuffer } = await import(
+            "@/repository/message-write-buffer"
+          );
+          await stopMessageRequestWriteBuffer();
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to stop message request write buffer", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        try {
+          if (instrumentationState.__CCH_CLOUD_PRICE_SYNC_INTERVAL_ID__) {
+            clearInterval(instrumentationState.__CCH_CLOUD_PRICE_SYNC_INTERVAL_ID__);
+            instrumentationState.__CCH_CLOUD_PRICE_SYNC_INTERVAL_ID__ = undefined;
+            instrumentationState.__CCH_CLOUD_PRICE_SYNC_STARTED__ = false;
+          }
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to stop cloud price sync scheduler", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
+
+      process.once("SIGTERM", () => {
+        void shutdownHandler("SIGTERM");
+      });
+
+      process.once("SIGINT", () => {
+        void shutdownHandler("SIGINT");
+      });
+    }
+
+    // 生产环境: 执行完整初始化(迁移 + 价格表 + 清理任务 + 通知任务)
+    if (process.env.NODE_ENV === "production") {
+      const { checkDatabaseConnection, runMigrations, withAdvisoryLock } = await import(
+        "@/lib/migrate"
+      );
+
+      logger.info("Initializing Claude Code Hub");
+
+      // 等待数据库连接
+      const isConnected = await checkDatabaseConnection();
+      if (!isConnected) {
+        logger.error("Cannot start application without database connection");
+        process.exit(1);
+      }
+
+      // 执行迁移（可通过 AUTO_MIGRATE=false 跳过）
+      const autoMigrateRaw = process.env.AUTO_MIGRATE?.trim().toLowerCase();
+      const autoMigrateDisabled =
+        autoMigrateRaw === "false" ||
+        autoMigrateRaw === "0" ||
+        autoMigrateRaw === "no" ||
+        autoMigrateRaw === "off";
+
+      if (!autoMigrateDisabled) {
+        await runMigrations();
+      } else {
+        logger.info("[Instrumentation] AUTO_MIGRATE disabled: skipping migrations", {
+          value: process.env.AUTO_MIGRATE,
+        });
+      }
+
+      // Ledger backfill: fire-and-forget after migration (non-blocking, idempotent)
+      import("@/lib/ledger-backfill")
+        .then(({ backfillUsageLedger }) =>
+          backfillUsageLedger().then((result) => {
+            logger.info("[Instrumentation] Ledger backfill complete", result);
+          })
+        )
+        .catch((err) => {
+          logger.warn("[Instrumentation] Ledger backfill failed (non-fatal)", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+
+      warmupApiKeyVacuumFilter();
+
+      // 回填 provider_vendors/provider_endpoints（幂等）
+      // 多实例启动时仅允许一个实例执行，避免重复扫描/写入导致的启动抖动（#779/#781）。
+      const backfillLockName = "claude-code-hub:backfill:providers";
+      const backfill = await withAdvisoryLock(
+        backfillLockName,
+        async () => {
+          // 回填 provider_vendors（按域名自动聚合旧 providers）
+          try {
+            const { backfillProviderVendorsFromProviders } = await import(
+              "@/repository/provider-endpoints"
+            );
+            const vendorResult = await backfillProviderVendorsFromProviders();
+            logger.info("[Instrumentation] Provider vendors backfill completed", {
+              processed: vendorResult.processed,
+              providersUpdated: vendorResult.providersUpdated,
+              vendorsCreatedCount: vendorResult.vendorsCreated.size,
+              skippedInvalidUrl: vendorResult.skippedInvalidUrl,
+            });
+          } catch (error) {
+            logger.warn("[Instrumentation] Failed to backfill provider vendors", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+
+          // 回填 provider_endpoints（从 providers.url/类型 生成端点池，幂等）
+          try {
+            const { backfillProviderEndpointsFromProviders } = await import(
+              "@/repository/provider-endpoints"
+            );
+            const result = await backfillProviderEndpointsFromProviders();
+            logger.info("[Instrumentation] Provider endpoints backfill completed", result);
+          } catch (error) {
+            logger.warn("[Instrumentation] Failed to backfill provider endpoints", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        },
+        { skipIfLocked: true }
+      );
+
+      if (!backfill.ran) {
+        logger.info("[Instrumentation] Provider backfill skipped (lock not acquired)", {
+          lockName: backfillLockName,
+        });
+      }
+
+      // 初始化价格表（如果数据库为空）
+      const { ensurePriceTable } = await import("@/lib/price-sync/seed-initializer");
+      await ensurePriceTable();
+
+      // 启动云端价格表定时同步
+      await startCloudPriceSyncScheduler();
+
+      // 同步错误规则并初始化检测器（非关键功能,允许优雅降级）
+      try {
+        await syncErrorRulesAndInitializeDetector();
+      } catch (error) {
+        logger.error(
+          "[Instrumentation] Non-critical: Error rule detector initialization failed",
+          error
+        );
+        // 继续启动 - 错误检测不是核心功能的关键依赖
+      }
+
+      // 初始化日志清理任务队列（如果启用）
+      const { scheduleAutoCleanup } = await import("@/lib/log-cleanup/cleanup-queue");
+      await scheduleAutoCleanup();
+
+      // 初始化通知任务队列（如果启用）
+      const { scheduleNotifications } = await import("@/lib/notification/notification-queue");
+      await scheduleNotifications();
+
+      // 初始化智能探测调度器（如果启用）
+      const { startProbeScheduler, isSmartProbingEnabled } = await import(
+        "@/lib/circuit-breaker-probe"
+      );
+      if (isSmartProbingEnabled()) {
+        startProbeScheduler();
+        logger.info("Smart probing scheduler started");
+      }
+
+      try {
+        const { startEndpointProbeScheduler } = await import(
+          "@/lib/provider-endpoints/probe-scheduler"
+        );
+        startEndpointProbeScheduler();
+      } catch (error) {
+        logger.warn("[Instrumentation] Failed to start endpoint probe scheduler", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      try {
+        const { startPublicStatusRebuildScheduler } = await import("@/lib/public-status/scheduler");
+        startPublicStatusRebuildScheduler();
+      } catch (error) {
+        logger.warn("[Instrumentation] Failed to start public status rebuild scheduler", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      // 初始化端点熔断器（禁用时清理残留状态）
+      try {
+        const { initEndpointCircuitBreaker } = await import("@/lib/endpoint-circuit-breaker");
+        await initEndpointCircuitBreaker();
+      } catch (error) {
+        logger.warn("[Instrumentation] Failed to initialize endpoint circuit breaker", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      try {
+        const { startEndpointProbeLogCleanup } = await import(
+          "@/lib/provider-endpoints/probe-log-cleanup"
+        );
+        startEndpointProbeLogCleanup();
+      } catch (error) {
+        logger.warn("[Instrumentation] Failed to start endpoint probe log cleanup", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      logger.info("Application ready");
+    }
+    // 开发环境: 执行迁移 + 初始化价格表（禁用 Bull Queue 避免 Turbopack 冲突）
+    else if (process.env.NODE_ENV === "development") {
+      logger.info("Development mode: running migrations and initializing price table");
+
+      // 执行数据库迁移（修复：开发环境也需要迁移）
+      const { checkDatabaseConnection, runMigrations } = await import("@/lib/migrate");
+      const isConnected = await checkDatabaseConnection();
+      if (isConnected) {
+        await runMigrations();
+
+        // Ledger backfill: fire-and-forget after migration (non-blocking, idempotent)
+        import("@/lib/ledger-backfill")
+          .then(({ backfillUsageLedger }) =>
+            backfillUsageLedger().then((result) => {
+              logger.info("[Instrumentation] Ledger backfill complete", result);
+            })
+          )
+          .catch((err) => {
+            logger.warn("[Instrumentation] Ledger backfill failed (non-fatal)", {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+
+        warmupApiKeyVacuumFilter();
+
+        // 回填 provider_vendors（按域名自动聚合旧 providers）
+        try {
+          const { backfillProviderVendorsFromProviders } = await import(
+            "@/repository/provider-endpoints"
+          );
+          const vendorResult = await backfillProviderVendorsFromProviders();
+          logger.info("[Instrumentation] Provider vendors backfill completed", {
+            processed: vendorResult.processed,
+            providersUpdated: vendorResult.providersUpdated,
+            vendorsCreatedCount: vendorResult.vendorsCreated.size,
+            skippedInvalidUrl: vendorResult.skippedInvalidUrl,
+          });
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to backfill provider vendors", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        // 回填 provider_endpoints（幂等；避免老数据缺少端点池）
+        try {
+          const { backfillProviderEndpointsFromProviders } = await import(
+            "@/repository/provider-endpoints"
+          );
+          const result = await backfillProviderEndpointsFromProviders();
+          logger.info("[Instrumentation] Provider endpoints backfill completed", result);
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to backfill provider endpoints", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      } else {
+        logger.warn("Database connection failed, skipping migrations");
+      }
+
+      // 初始化价格表（如果数据库为空）
+      const { ensurePriceTable } = await import("@/lib/price-sync/seed-initializer");
+      await ensurePriceTable();
+
+      // 启动云端价格表定时同步（仅在数据库可用时启用，避免本地无 DB 时反复报错）
+      if (isConnected) {
+        await startCloudPriceSyncScheduler();
+      }
+
+      // 同步错误规则并初始化检测器（非关键功能,允许优雅降级）
+      try {
+        await syncErrorRulesAndInitializeDetector();
+      } catch (error) {
+        logger.error(
+          "[Instrumentation] Non-critical: Error rule detector initialization failed",
+          error
+        );
+        // 继续启动 - 错误检测不是核心功能的关键依赖
+      }
+
+      // NOTE: 开发环境禁用通知队列（Bull + Turbopack 不兼容）
+      // 通知功能仅在生产环境可用，开发环境需要手动测试
+      logger.warn(
+        "Notification queue disabled in development mode due to Bull + Turbopack incompatibility. " +
+          "Notification features are only available in production environment."
+      );
+
+      // 初始化智能探测调度器（开发环境也支持）
+      const { startProbeScheduler, isSmartProbingEnabled } = await import(
+        "@/lib/circuit-breaker-probe"
+      );
+      if (isSmartProbingEnabled()) {
+        startProbeScheduler();
+        logger.info("Smart probing scheduler started (development mode)");
+      }
+
+      if (isConnected) {
+        try {
+          const { startEndpointProbeScheduler } = await import(
+            "@/lib/provider-endpoints/probe-scheduler"
+          );
+          startEndpointProbeScheduler();
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to start endpoint probe scheduler", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        try {
+          const { startPublicStatusRebuildScheduler } = await import(
+            "@/lib/public-status/scheduler"
+          );
+          startPublicStatusRebuildScheduler();
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to start public status rebuild scheduler", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        // 初始化端点熔断器（禁用时清理残留状态）
+        try {
+          const { initEndpointCircuitBreaker } = await import("@/lib/endpoint-circuit-breaker");
+          await initEndpointCircuitBreaker();
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to initialize endpoint circuit breaker", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        try {
+          const { startEndpointProbeLogCleanup } = await import(
+            "@/lib/provider-endpoints/probe-log-cleanup"
+          );
+          startEndpointProbeLogCleanup();
+        } catch (error) {
+          logger.warn("[Instrumentation] Failed to start endpoint probe log cleanup", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      } else {
+        logger.warn(
+          "[Instrumentation] Database unavailable: skipping endpoint probe scheduler and cleanup"
+        );
+      }
+
+      logger.info("Development environment ready");
+    }
+  }
+}

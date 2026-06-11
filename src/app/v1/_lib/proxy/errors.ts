@@ -1,0 +1,1344 @@
+/**
+ * 代理错误类 - 携带上游完整错误信息
+ *
+ * 设计原则：
+ * 1. 数据结构优先：错误不是字符串，而是结构化对象
+ * 2. 智能截断：JSON 完整保存，文本限制 500 字符
+ * 3. 可读性优先：纯文本格式化，便于排查问题
+ */
+import { getEnvConfig } from "@/lib/config/env.schema";
+import { type ErrorDetectionResult, errorRuleDetector } from "@/lib/error-rule-detector";
+import { redactJsonString } from "@/lib/utils/message-redaction";
+import { sanitizeErrorTextForDetail } from "@/lib/utils/upstream-error-detection";
+import type { ErrorOverrideResponse } from "@/repository/error-rules";
+import type { ProviderChainItem } from "@/types/message";
+import type { ProxySession } from "./session";
+
+/** Marker message for the synthetic terminal error emitted when every provider fails. */
+export const ALL_PROVIDERS_UNAVAILABLE_MESSAGE = "所有供应商暂时不可用，请稍后重试";
+
+export class ProxyError extends Error {
+  public readonly isLocalAbort: boolean;
+
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+    public readonly upstreamError?: {
+      /**
+       * 上游响应体（智能截断）。
+       *
+       * 注意：该字段会进入 getDetailedErrorMessage()，并被记录到数据库中，
+       * 因此不要在这里放入“大段原文”或未脱敏的敏感内容。
+       */
+      body: string;
+      parsed?: unknown; // 解析后的 JSON（如果有）
+      providerId?: number;
+      providerName?: string;
+      requestId?: string; // 上游请求 ID（用于覆写响应时注入）
+
+      /**
+       * 上游响应体原文（通常为前缀片段）。
+       *
+       * 设计目标：
+       * - 仅用于“本次错误响应”返回给客户端（受系统设置控制）；
+       * - 不参与规则匹配与持久化（避免污染数据库/日志）。
+       *
+       * 目前主要用于“假 200”检测：HTTP 状态码为 2xx，但 body 实际为错误页/错误 JSON。
+       */
+      rawBody?: string;
+      rawBodyTruncated?: boolean;
+
+      /**
+       * 标记该 ProxyError 的 statusCode 是否由“响应体内容”推断得出（而非上游真实 HTTP 状态码）。
+       *
+       * 典型场景：上游返回 HTTP 200，但 body 为错误页/错误 JSON（假 200）。此时 CCH 会根据响应体内容推断更贴近语义的 4xx/5xx，
+       * 以便让故障转移/熔断/会话绑定逻辑与“真实上游错误状态码”保持一致。
+       */
+      statusCodeInferred?: boolean;
+      /**
+       * 命中的推断规则 id（仅用于内部调试/审计，不应用于用户展示文案）。
+       */
+      statusCodeInferenceMatcherId?: string;
+
+      /**
+       * 安全脱敏后的上游错误候选 message。
+       *
+       * 仅供标准客户端错误响应在系统开关允许时使用，不进入详细日志/规则匹配。
+       */
+      safeClientMessageCandidate?: string;
+    },
+    isLocalAbort: boolean = false
+  ) {
+    super(message);
+    this.name = "ProxyError";
+    this.isLocalAbort = isLocalAbort;
+  }
+
+  /**
+   * 从上游响应创建 ProxyError
+   *
+   * 流程：
+   * 1. 读取响应体
+   * 2. 识别 Content-Type 并解析 JSON
+   * 3. 从 JSON 提取错误消息（支持多种格式）
+   * 4. 智能截断（JSON 完整，文本 500 字符）
+   */
+  static async fromUpstreamResponse(
+    response: Response,
+    provider: { id: number; name: string }
+  ): Promise<ProxyError> {
+    const contentType = response.headers.get("content-type") || "";
+    let body = "";
+    let parsed: unknown;
+
+    // 1. 读取响应体
+    try {
+      body = await response.text();
+    } catch (error) {
+      body = `Failed to read response body: ${(error as Error).message}`;
+    }
+
+    // 2. 尝试解析 JSON
+    if (contentType.includes("application/json") && body) {
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        // 不是有效 JSON，保留原始文本
+      }
+    }
+
+    // 3. 提取错误消息
+    const extractedMessage = ProxyError.extractErrorMessage(parsed);
+    const fallbackMessage = `Provider returned ${response.status}: ${response.statusText}`;
+    const message = extractedMessage || fallbackMessage;
+
+    // 4. 智能截断响应体
+    const truncatedBody = ProxyError.smartTruncate(body, parsed);
+
+    // 5. 提取 request_id（从响应体或响应头）
+    const requestId =
+      ProxyError.extractRequestIdFromBody(parsed) ||
+      ProxyError.extractRequestIdFromHeaders(response.headers);
+
+    return new ProxyError(message, response.status, {
+      body: truncatedBody,
+      parsed,
+      providerId: provider.id,
+      providerName: provider.name,
+      requestId,
+    });
+  }
+
+  /**
+   * 从解析后的 JSON 响应体中提取 request_id
+   *
+   * 支持多种嵌套格式：
+   * 1. 顶层 request_id/requestId（标准 Claude/OpenAI 格式）
+   * 2. error 对象内的 request_id/requestId
+   * 3. error.upstream_error 对象内的 request_id/requestId（中继服务格式）
+   * 4. message 字段内嵌套 JSON 字符串中的 request_id（某些代理服务格式）
+   *
+   * @example
+   * // 标准格式
+   * { "request_id": "req_xxx" }
+   *
+   * // error 对象内
+   * { "error": { "request_id": "req_xxx" } }
+   *
+   * // upstream_error 格式
+   * { "error": { "upstream_error": { "request_id": "req_xxx" } } }
+   *
+   * // message 内嵌套 JSON
+   * { "error": { "message": "{\"request_id\":\"req_xxx\"}" } }
+   */
+  private static extractRequestIdFromBody(parsed: unknown): string | undefined {
+    if (!parsed || typeof parsed !== "object") return undefined;
+    return ProxyError.extractRequestIdFromObject(parsed as Record<string, unknown>);
+  }
+
+  /**
+   * 通用的 request_id 提取逻辑
+   *
+   * @param obj - 要提取的对象
+   * @param remainingDepth - 允许的嵌套 JSON 解析次数，防止循环/过度 JSON.parse
+   */
+  private static extractRequestIdFromObject(
+    obj: Record<string, unknown>,
+    remainingDepth: number = 2
+  ): string | undefined {
+    let depthBudget = remainingDepth;
+
+    // 1. 检查顶层 request_id/requestId
+    const flatRequestId = ProxyError.extractRequestIdFromFlat(obj);
+    if (flatRequestId) {
+      return flatRequestId;
+    }
+
+    // 2. 检查 error 对象内的各种格式
+    if (obj.error && typeof obj.error === "object") {
+      const errorObj = obj.error as Record<string, unknown>;
+
+      // 2.1 直接在 error 对象内的 request_id/requestId
+      const errorRequestId = ProxyError.extractRequestIdFromFlat(errorObj);
+      if (errorRequestId) {
+        return errorRequestId;
+      }
+
+      // 2.2 检查 error.upstream_error 对象（中继服务格式）
+      if (errorObj.upstream_error && typeof errorObj.upstream_error === "object") {
+        const upstreamError = errorObj.upstream_error as Record<string, unknown>;
+
+        // 2.2.1 直接在 upstream_error 对象内的 request_id
+        const upstreamRequestId = ProxyError.extractRequestIdFromFlat(upstreamError);
+        if (upstreamRequestId) {
+          return upstreamRequestId;
+        }
+
+        // 2.2.2 检查 upstream_error.error 对象（深层嵌套格式）
+        // 例如: { error: { upstream_error: { error: { message: "{...request_id...}" } } } }
+        if (upstreamError.error && typeof upstreamError.error === "object") {
+          const nestedError = upstreamError.error as Record<string, unknown>;
+
+          // 检查 upstream_error.error.request_id
+          const nestedRequestId = ProxyError.extractRequestIdFromFlat(nestedError);
+          if (nestedRequestId) {
+            return nestedRequestId;
+          }
+
+          // 检查 upstream_error.error.message 内的嵌套格式
+          if (typeof nestedError.message === "string" && depthBudget > 0) {
+            const msgRequestId = ProxyError.extractRequestIdFromJsonString(
+              nestedError.message,
+              depthBudget - 1
+            );
+            if (msgRequestId) {
+              return msgRequestId;
+            }
+          }
+        }
+      }
+
+      // 2.3 尝试从 error.message 字段解析嵌套 JSON
+      if (typeof errorObj.message === "string" && depthBudget > 0) {
+        const nestedRequestId = ProxyError.extractRequestIdFromJsonString(
+          errorObj.message,
+          depthBudget - 1
+        );
+        if (nestedRequestId) {
+          return nestedRequestId;
+        }
+        depthBudget -= 1; // 消耗一次尝试，避免重复解析同一层 message
+      }
+    }
+
+    // 3. 检查顶层 message 字段内的嵌套 JSON
+    if (typeof obj.message === "string" && depthBudget > 0) {
+      return ProxyError.extractRequestIdFromJsonString(obj.message, depthBudget - 1);
+    }
+
+    return undefined;
+  }
+
+  /**
+   * 从对象中直接提取 request_id（不递归）
+   */
+  private static extractRequestIdFromFlat(obj: Record<string, unknown>): string | undefined {
+    if (typeof obj.request_id === "string" && obj.request_id.trim()) {
+      return obj.request_id.trim();
+    }
+    if (typeof obj.requestId === "string" && obj.requestId.trim()) {
+      return obj.requestId.trim();
+    }
+    return undefined;
+  }
+
+  /**
+   * 从可能包含 JSON 或 request_id 的字符串中提取 request_id
+   *
+   * 支持的格式：
+   * 1. 纯 JSON 字符串: `{"request_id":"req_xxx"}`
+   * 2. JSON + 尾部文本: `{"request_id":"req_xxx"}（traceid: ...）`
+   * 3. 纯文本格式: `... (request id: xxx)` 或 `... (request_id: xxx)`
+   *
+   * @param str - 可能包含 JSON 或 request_id 的字符串
+   * @param remainingDepth - 允许的嵌套 JSON 解析次数
+   * @returns 提取的 request_id，如果未找到则返回 undefined
+   */
+  private static extractRequestIdFromJsonString(
+    str: string,
+    remainingDepth: number = 2
+  ): string | undefined {
+    const trimmed = str.trim();
+    if (remainingDepth < 0) {
+      return undefined;
+    }
+
+    // 策略 1: 尝试解析 JSON（可能以 { 开头）
+    if (trimmed.startsWith("{")) {
+      // 尝试直接解析整个字符串
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object") {
+          return ProxyError.extractRequestIdFromObject(
+            parsed as Record<string, unknown>,
+            remainingDepth
+          );
+        }
+      } catch {
+        // JSON.parse 失败，可能是 JSON + 尾部文本的情况
+        // 尝试提取 JSON 部分（找到匹配的 } 位置）
+        const jsonPart = ProxyError.extractJsonFromString(trimmed);
+        if (jsonPart) {
+          try {
+            const parsed = JSON.parse(jsonPart);
+            if (parsed && typeof parsed === "object") {
+              return ProxyError.extractRequestIdFromObject(
+                parsed as Record<string, unknown>,
+                remainingDepth
+              );
+            }
+          } catch {
+            // 提取的部分也不是有效 JSON，继续尝试其他策略
+          }
+        }
+      }
+    }
+
+    // 策略 2: 正则提取纯文本格式的 request_id
+    // 匹配: (request id: xxx) 或 (request_id: xxx) 或 request_id: xxx
+    return ProxyError.extractRequestIdFromText(str);
+  }
+
+  /**
+   * 从字符串中提取 JSON 对象部分
+   *
+   * 处理类似 `{"key":"value"}（额外文本）` 的情况
+   * 通过括号匹配找到 JSON 对象的结束位置
+   */
+  private static extractJsonFromString(str: string): string | null {
+    if (!str.startsWith("{")) {
+      return null;
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+
+      if (char === "\\") {
+        escape = true;
+        continue;
+      }
+
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) {
+        continue;
+      }
+
+      if (char === "{") {
+        depth++;
+      } else if (char === "}") {
+        depth--;
+        if (depth === 0) {
+          // 找到匹配的结束括号
+          return str.substring(0, i + 1);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 从纯文本中提取 request_id
+   *
+   * 支持的格式：
+   * - (request id: xxx)
+   * - (request_id: xxx)
+   * - request_id: "xxx"
+   * - "request_id": "xxx"
+   */
+  private static extractRequestIdFromText(str: string): string | undefined {
+    // 模式 1: (request id: xxx) 或 (request_id: xxx) - 括号内格式
+    const parenMatch = str.match(/\(request[_ ]id:\s*([^)]+)\)/i);
+    if (parenMatch?.[1]) {
+      return parenMatch[1].trim();
+    }
+
+    // 模式 2: "request_id": "xxx" - JSON 字段格式（用于部分损坏的 JSON）
+    const jsonFieldMatch = str.match(/"request_id"\s*:\s*"([^"]+)"/);
+    if (jsonFieldMatch?.[1]) {
+      return jsonFieldMatch[1].trim();
+    }
+
+    return undefined;
+  }
+
+  /**
+   * 从响应头中提取 request_id
+   */
+  private static extractRequestIdFromHeaders(headers: Headers): string | undefined {
+    // 常见的 request_id 响应头名称
+    const headerNames = ["x-request-id", "request-id", "x-amzn-requestid"];
+    for (const name of headerNames) {
+      const value = headers.get(name);
+      if (value?.trim()) {
+        return value.trim();
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 从 JSON 中提取错误消息
+   * 支持的格式：
+   * - Claude API: { "error": { "message": "...", "type": "..." } }
+   * - OpenAI API: { "error": { "message": "..." } }
+   * - Generic: { "message": "..." } 或 { "error": "..." }
+   */
+  private static extractErrorMessage(parsed: unknown): string | null {
+    if (!parsed || typeof parsed !== "object") return null;
+
+    const obj = parsed as Record<string, unknown>;
+
+    // Claude/OpenAI 格式：{ "error": { "message": "..." } }
+    if (obj.error && typeof obj.error === "object") {
+      const errorObj = obj.error as Record<string, unknown>;
+
+      // Claude 格式：带 type
+      if (typeof errorObj.message === "string" && typeof errorObj.type === "string") {
+        return `${errorObj.type}: ${errorObj.message}`;
+      }
+
+      // OpenAI 格式：仅 message
+      if (typeof errorObj.message === "string") {
+        return errorObj.message;
+      }
+    }
+
+    // 通用格式：{ "message": "..." }
+    if (typeof obj.message === "string") {
+      return obj.message;
+    }
+
+    // 简单格式：{ "error": "..." }
+    if (typeof obj.error === "string") {
+      return obj.error;
+    }
+
+    return null;
+  }
+
+  /**
+   * 智能截断响应体
+   * - JSON: 完整保存（序列化后）
+   * - 文本: 限制 500 字符
+   */
+  private static smartTruncate(body: string, parsed?: unknown): string {
+    if (parsed) {
+      // JSON 格式：完整保存
+      return JSON.stringify(parsed);
+    }
+
+    // 纯文本：截断到 500 字符
+    if (body.length > 500) {
+      return `${body.substring(0, 500)}...`;
+    }
+
+    return body;
+  }
+
+  /**
+   * 获取适合记录到数据库的详细错误信息
+   * 格式：Provider {name} returned {status}: {message} | Upstream: {body}
+   */
+  getDetailedErrorMessage(): string {
+    const parts: string[] = [];
+
+    // Part 1: Provider 信息 + 状态码
+    if (this.upstreamError?.providerName) {
+      parts.push(
+        `Provider ${this.upstreamError.providerName} returned ${this.statusCode}: ${this.message}`
+      );
+    } else {
+      parts.push(this.message);
+    }
+
+    // Part 2: 上游响应（仅在有响应体时）
+    if (this.upstreamError?.body) {
+      parts.push(`Upstream: ${this.upstreamError.body}`);
+    }
+
+    return parts.join(" | ");
+  }
+
+  /**
+   * 获取适合返回给客户端的安全错误信息
+   * 不包含供应商名称等敏感信息，仅返回从上游提取的错误消息
+   *
+   * 与 getDetailedErrorMessage() 的区别：
+   * - getDetailedErrorMessage(): 包含供应商名称，用于内部日志记录
+   * - getClientSafeMessage(): 不包含供应商名称，用于返回给客户端
+   */
+  getClientSafeMessage(): string {
+    // 注意：一些内部检测/统计用的“错误码”（例如 FAKE_200_*）不适合直接暴露给客户端。
+    // 这里做最小映射：当 message 为 FAKE_200_* 时返回“可读原因说明”，并附带安全的上游片段（若有）。
+    if (this.message.startsWith("FAKE_200_")) {
+      // 说明：这些 code 都来自内部的“假 200”检测，代表：上游返回 HTTP 200，但响应体内容更像错误页/错误 JSON。
+      // 我们需要：
+      // 1) 给用户清晰的错误原因（避免只看到一个内部 code）；
+      // 2) 不泄露内部错误码/供应商名称；
+      // 3) 在有 detail 时附带一小段“脱敏 + 截断”的上游片段，帮助排查。
+      const reason = (() => {
+        switch (this.message) {
+          case "FAKE_200_EMPTY_BODY":
+            return "Upstream returned HTTP 200, but the response body was empty.";
+          case "FAKE_200_HTML_BODY":
+            return "Upstream returned HTTP 200, but the response body looks like an HTML document (likely an error page).";
+          case "FAKE_200_JSON_ERROR_MESSAGE_NON_EMPTY":
+            return "Upstream returned HTTP 200, but the JSON body contains a non-empty `error.message`.";
+          case "FAKE_200_JSON_ERROR_NON_EMPTY":
+            return "Upstream returned HTTP 200, but the JSON body contains a non-empty `error` field.";
+          case "FAKE_200_JSON_MESSAGE_KEYWORD_MATCH":
+            return "Upstream returned HTTP 200, but the JSON `message` suggests an error (heuristic).";
+          default:
+            return "Upstream returned HTTP 200, but the response body indicates an error.";
+        }
+      })();
+
+      const inferredNote = this.upstreamError?.statusCodeInferred
+        ? ` Inferred HTTP status: ${this.statusCode}.`
+        : "";
+
+      const detail = this.upstreamError?.body?.trim();
+      if (detail) {
+        // 注意：对 FAKE_200_* 路径，我们期望 upstreamError.body 来自内部检测得到的“脱敏 + 截断片段”（详见 upstream-error-detection.ts）。
+        //
+        // 但为避免未来调用方误把“未脱敏的大段原文”塞进 upstreamError.body 导致泄露，
+        // 这里再做一次防御性处理：
+        // - whitespace 归一化（避免多行污染客户端日志）
+        // - 二次截断（上限 200 字符）
+        // - 轻量脱敏（避免明显的 token/key 泄露）
+        const normalized = detail.replace(/\s+/g, " ").trim();
+        const maxChars = 200;
+        const clipped =
+          normalized.length > maxChars ? `${normalized.slice(0, maxChars)}…` : normalized;
+        const safe = sanitizeErrorTextForDetail(clipped);
+        return `${reason}${inferredNote} Upstream detail: ${safe}`;
+      }
+
+      return `${reason}${inferredNote}`;
+    }
+
+    return this.message;
+  }
+}
+
+/**
+ * 错误分类：区分供应商错误和系统错误
+ */
+export enum ErrorCategory {
+  PROVIDER_ERROR, // 供应商问题（所有 4xx/5xx HTTP 错误）→ 计入熔断器 + 直接切换
+  SYSTEM_ERROR, // 系统/网络问题（fetch 网络异常）→ 不计入熔断器 + 先重试1次
+  CLIENT_ABORT, // 客户端主动中断 → 不计入熔断器 + 不重试 + 直接返回
+  NON_RETRYABLE_CLIENT_ERROR, // 客户端输入错误（Prompt 超限、内容过滤、PDF 限制、Thinking 格式、参数缺失/额外参数、非法请求）→ 不计入熔断器 + 不重试 + 直接返回
+  RESOURCE_NOT_FOUND, // 上游 404 错误 → 不计入熔断器 + 直接切换供应商
+}
+
+/**
+ * 从错误对象中提取用于规则匹配的内容
+ *
+ * 优先使用整个响应体（upstreamError.body），这样规则可以匹配响应中的任何内容
+ * 如果没有响应体，则使用错误消息
+ */
+function extractErrorContentForDetection(error: Error): string {
+  // 优先使用整个响应体进行规则匹配
+  if (error instanceof ProxyError && error.upstreamError?.body) {
+    return error.upstreamError.body;
+  }
+  return error.message;
+}
+
+/**
+ * 错误规则检测结果缓存
+ *
+ * 使用 WeakMap 避免内存泄漏，同一个 Error 对象只检测一次
+ * 这样 isNonRetryableClientError 和 getErrorOverrideMessage 可以复用检测结果
+ */
+const errorDetectionCache = new WeakMap<Error, ErrorDetectionResult>();
+
+/**
+ * 检测错误规则（异步版本，带缓存）
+ *
+ * 同一个 Error 对象只执行一次规则匹配，后续调用直接返回缓存结果
+ *
+ * 重要：此函数会确保错误规则在检测前已从数据库加载，
+ * 解决冷启动时规则未初始化导致检测失败的问题
+ */
+async function detectErrorRuleOnceAsync(error: Error): Promise<ErrorDetectionResult> {
+  const cached = errorDetectionCache.get(error);
+  if (cached) {
+    return cached;
+  }
+
+  const content = extractErrorContentForDetection(error);
+
+  // 使用 detectAsync 确保规则已加载
+  const result = await errorRuleDetector.detectAsync(content);
+  errorDetectionCache.set(error, result);
+  return result;
+}
+
+/**
+ * 获取错误规则检测结果（异步版本，带缓存）
+ *
+ * 用于在 forwarder/handler 中复用 detectErrorRuleOnceAsync 的 WeakMap 缓存，
+ * 避免对同一个 Error 对象重复执行规则匹配。
+ */
+export async function getErrorDetectionResultAsync(error: Error): Promise<ErrorDetectionResult> {
+  return detectErrorRuleOnceAsync(error);
+}
+
+/**
+ * 向后兼容的同步检测入口，供尚未迁移的调用方/测试使用
+ *
+ * 若缓存已命中，直接返回结果；
+ * 若缓存尚未初始化，会立即返回当前同步检测结果，
+ * 并在后台触发一次 detectErrorRuleOnceAsync 以完成加载并填充缓存。
+ *
+ * 注意：生产代码路径（forwarder、error-handler）应使用异步版本
+ * isNonRetryableClientErrorAsync 以确保规则已加载
+ */
+export function isNonRetryableClientError(error: Error): boolean {
+  const cached = errorDetectionCache.get(error);
+  if (cached) {
+    return cached.matched;
+  }
+
+  const content = extractErrorContentForDetection(error);
+  const result = errorRuleDetector.detect(content);
+
+  // 只有规则已初始化时才缓存结果，避免缓存可能不完整的结果
+  if (errorRuleDetector.hasInitialized()) {
+    errorDetectionCache.set(error, result);
+  } else {
+    // 触发异步初始化，后续调用会获取正确结果
+    void detectErrorRuleOnceAsync(error).catch(() => undefined);
+  }
+
+  return result.matched;
+}
+
+/**
+ * 检测是否为不可重试的客户端输入错误（异步版本）
+ *
+ * 此函数会确保错误规则已加载后再进行检测
+ * 生产代码路径（forwarder、error-handler）应优先使用此版本
+ */
+export async function isNonRetryableClientErrorAsync(error: Error): Promise<boolean> {
+  // 使用缓存的检测结果，避免重复执行规则匹配
+  const result = await detectErrorRuleOnceAsync(error);
+  return result.matched;
+}
+
+/**
+ * 错误覆写结果
+ */
+export interface ErrorOverrideResult {
+  /** 覆写的响应体（可选，null 表示不覆写响应体，仅覆写状态码） */
+  response: ErrorOverrideResponse | null;
+  /** 覆写的状态码（可选，null 表示透传上游状态码） */
+  statusCode: number | null;
+}
+
+/**
+ * 检测错误并返回覆写配置（异步版本）
+ *
+ * 用于在返回错误响应时应用覆写，将复杂的上游错误转换为友好的用户提示
+ * 支持三种覆写模式：
+ * 1. 仅覆写响应体
+ * 2. 仅覆写状态码
+ * 3. 同时覆写响应体和状态码
+ *
+ * 此函数会确保错误规则已加载后再进行检测
+ *
+ * @param error - 错误对象
+ * @returns 覆写配置（如果配置了响应体或状态码），否则返回 undefined
+ */
+export async function getErrorOverrideAsync(
+  error: Error
+): Promise<ErrorOverrideResult | undefined> {
+  // 使用缓存的检测结果，避免重复执行规则匹配
+  const result = await detectErrorRuleOnceAsync(error);
+
+  // 只要配置了响应体或状态码，就返回覆写配置
+  if (result.matched && (result.overrideResponse || result.overrideStatusCode)) {
+    return {
+      response: result.overrideResponse ?? null,
+      statusCode: result.overrideStatusCode ?? null,
+    };
+  }
+
+  return undefined;
+}
+
+/**
+ * 检测是否为客户端中断错误
+ *
+ * 采用白名单模式，精确检测客户端主动中断的错误，避免误判业务错误。
+ *
+ * 检测逻辑（优先级从高到低）：
+ * 1. 错误名称检查（最可靠）：AbortError、ResponseAborted
+ * 2. HTTP 状态码检查：499（Client Closed Request）
+ * 3. 错误消息检查（向后兼容）：仅检查精确的中断消息
+ *
+ * @param error - 错误对象
+ * @returns 是否为客户端中断错误
+ *
+ * @example
+ * isClientAbortError(new Error('AbortError')) // true
+ * isClientAbortError(new Error('User aborted transaction')) // false（业务错误，不是客户端中断）
+ */
+export function isClientAbortError(error: Error): boolean {
+  // 1. 检查错误名称（最可靠）
+  if (error.name === "AbortError" || error.name === "ResponseAborted") {
+    return true;
+  }
+
+  // 2. 仅 CCH 本地合成的 499（非上游 HTTP 499）
+  if (error instanceof ProxyError && error.statusCode === 499 && error.isLocalAbort) {
+    return true;
+  }
+
+  // 3. 精确消息白名单（去掉 "aborted" 泛匹配，避免误伤上游错误文案）
+  const abortMessages = [
+    "This operation was aborted", // 标准 AbortError 消息
+    "The user aborted a request", // 浏览器标准消息
+  ];
+
+  return abortMessages.some((msg) => error.message.includes(msg));
+}
+
+/**
+ * Transport error detection
+ *
+ * Detects native undici/fetch transport errors that should always be classified
+ * as SYSTEM_ERROR regardless of error rule matching.
+ *
+ * These errors indicate network-level failures (DNS, connection, timeout) rather
+ * than application-level issues, and must not be misclassified by error rules
+ * that might match their message content.
+ *
+ * @param error - Error to check
+ * @returns true if error is a transport error
+ */
+export function isTransportError(error: Error): boolean {
+  const TRANSPORT_ERROR_CODES = new Set([
+    "UND_ERR_SOCKET",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_HEADERS_TIMEOUT",
+    "UND_ERR_BODY_TIMEOUT",
+    "UND_ERR_DESTROYED", // agent destroyed while request in flight
+    "UND_ERR_CLOSED", // agent closed while request in flight
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    // Node.js HTTP/2 stream errors —— 常被 undici/fetch 包装后放到 cause 链上
+    // 必须在这里登记，才能在 cause.code 分支里正确识别为 transport 错误
+    "ERR_HTTP2_STREAM_ERROR",
+  ]);
+
+  const TRANSPORT_MESSAGE_SIGNATURES = ["other side closed", "fetch failed"];
+
+  // Check error name
+  if (
+    error.name === "SocketError" ||
+    error.name === "ClientDestroyedError" ||
+    error.name === "ClientClosedError"
+  )
+    return true;
+
+  // Check error code on error itself or cause
+  const code =
+    (error as Error & { code?: string }).code ??
+    (error as Error & { cause?: { code?: string } }).cause?.code;
+  if (code && TRANSPORT_ERROR_CODES.has(code)) return true;
+
+  // Check message for known transport signatures
+  const msg = error.message.toLowerCase();
+  if (TRANSPORT_MESSAGE_SIGNATURES.some((sig) => msg.includes(sig))) return true;
+
+  // Check for HTTP/2 protocol errors (stream resets, GOAWAY, etc.)
+  if (isHttp2Error(error)) return true;
+
+  return false;
+}
+
+/**
+ * 限流错误类 - 携带详细的限流上下文信息
+ *
+ * 设计原则：
+ * 1. 结构化错误：携带 7 个核心字段用于精确反馈
+ * 2. 类型安全：使用 TypeScript 枚举确保限流类型正确
+ * 3. 可追踪性：包含 provider_id 用于追溯限流来源
+ */
+export class RateLimitError extends Error {
+  constructor(
+    public readonly type: "rate_limit_error",
+    message: string,
+    public readonly limitType:
+      | "rpm"
+      | "usd_5h"
+      | "usd_weekly"
+      | "usd_monthly"
+      | "usd_total"
+      | "concurrent_sessions"
+      | "daily_quota",
+    public readonly currentUsage: number,
+    public readonly limitValue: number,
+    public readonly resetTime: string | null, // ISO 8601 格式，滚动窗口为 null
+    public readonly providerId: number | null = null
+  ) {
+    super(message);
+    this.name = "RateLimitError";
+  }
+
+  /**
+   * 获取适合记录到数据库的 JSON 元数据
+   */
+  toJSON() {
+    return {
+      type: this.type,
+      limit_type: this.limitType,
+      current_usage: this.currentUsage,
+      limit_value: this.limitValue,
+      reset_time: this.resetTime,
+      provider_id: this.providerId,
+      message: this.message,
+    };
+  }
+}
+
+/**
+ * 类型守卫：检查是否为 RateLimitError
+ */
+export function isRateLimitError(error: unknown): error is RateLimitError {
+  return error instanceof RateLimitError;
+}
+
+/**
+ * 空响应错误类 - 用于检测上游返回空响应或缺少输出 token 的情况
+ *
+ * 设计原则：
+ * 1. 结构化错误：携带供应商信息和失败原因
+ * 2. 计入熔断器：空响应视为供应商问题
+ * 3. 触发故障切换：尝试其他供应商
+ */
+export class EmptyResponseError extends Error {
+  constructor(
+    public readonly providerId: number,
+    public readonly providerName: string,
+    public readonly reason: "empty_body" | "no_output_tokens" | "missing_content"
+  ) {
+    const reasonMessages = {
+      empty_body: "Response body is empty",
+      no_output_tokens: "Response has no output tokens",
+      missing_content: "Response is missing content field",
+    };
+    super(`Empty response from provider ${providerName}: ${reasonMessages[reason]}`);
+    this.name = "EmptyResponseError";
+  }
+
+  /**
+   * 获取适合记录的 JSON 元数据
+   */
+  toJSON() {
+    return {
+      type: "empty_response_error",
+      provider_id: this.providerId,
+      provider_name: this.providerName,
+      reason: this.reason,
+      message: this.message,
+    };
+  }
+
+  /**
+   * 获取适合返回给客户端的安全错误信息
+   * 不包含供应商名称等敏感信息
+   */
+  getClientSafeMessage(): string {
+    const reasonMessages = {
+      empty_body: "Response body is empty",
+      no_output_tokens: "Response has no output tokens",
+      missing_content: "Response is missing content field",
+    };
+    return `Empty response: ${reasonMessages[this.reason]}`;
+  }
+}
+
+/**
+ * 类型守卫：检查是否为 EmptyResponseError
+ */
+export function isEmptyResponseError(error: unknown): error is EmptyResponseError {
+  return error instanceof EmptyResponseError;
+}
+
+/**
+ * 判断错误类型（异步版本）
+ *
+ * 分类规则（优先级从高到低）：
+ * 1. 客户端主动中断（AbortError 或 error.code === 'ECONNRESET' 且 statusCode === 499）
+ *    → 客户端关闭连接或主动取消请求
+ *    → 不应计入熔断器（不是供应商问题）
+ *    → 不应重试（客户端已经不想要结果了）
+ *    → 应立即返回错误
+ *
+ * 2. 不可重试的客户端输入错误（Prompt 超限、内容过滤、PDF 限制、Thinking 参数格式错误、参数缺失、非法请求）
+ *    → 客户端输入违反了 API 的硬性限制或安全策略
+ *    → 不应计入熔断器（不是供应商故障）
+ *    → 不应重试（重试也会失败）
+ *    → 应立即返回错误，提示用户修正输入
+ *
+ * 3. 供应商问题（ProxyError - 所有 4xx/5xx HTTP 错误）
+ *    → 说明请求到达供应商并得到响应，但供应商无法正常处理
+ *    → 应计入熔断器，连续失败时触发熔断保护
+ *    → 应直接切换到其他供应商
+ *
+ * 4. 系统/网络问题（fetch 网络异常）
+ *    → 包括：DNS 解析失败、连接被拒绝、连接超时、网络中断等
+ *    → 不应计入供应商熔断器（不是供应商服务不可用）
+ *    → 应先重试1次当前供应商（可能是临时网络抖动）
+ *
+ * 此函数会确保错误规则已加载后再进行检测
+ *
+ * @param error - 捕获的错误对象
+ * @returns 错误分类（CLIENT_ABORT、NON_RETRYABLE_CLIENT_ERROR、PROVIDER_ERROR 或 SYSTEM_ERROR）
+ */
+export async function categorizeErrorAsync(error: Error): Promise<ErrorCategory> {
+  // 优先级 1: 客户端中断检测（优先级最高）- 使用统一的精确检测函数
+  if (isClientAbortError(error)) {
+    return ErrorCategory.CLIENT_ABORT; // 客户端主动中断
+  }
+
+  // 优先级 1.5: Native transport errors — must not be matched by error rules
+  // These are always SYSTEM_ERROR regardless of message content
+  if (isTransportError(error)) {
+    return ErrorCategory.SYSTEM_ERROR;
+  }
+
+  // 优先级 2: 不可重试的客户端输入错误检测（白名单模式）
+  // 使用异步版本确保错误规则已加载
+  if (await isNonRetryableClientErrorAsync(error)) {
+    return ErrorCategory.NON_RETRYABLE_CLIENT_ERROR; // 客户端输入错误
+  }
+
+  // 优先级 3: ProxyError = HTTP 错误（4xx 或 5xx）
+  if (error instanceof ProxyError) {
+    // 优先级 3.1: 404 错误特殊处理 - 不计入熔断器，仅触发故障切换
+    if (error.statusCode === 404) {
+      return ErrorCategory.RESOURCE_NOT_FOUND; // 上游资源不存在
+    }
+    return ErrorCategory.PROVIDER_ERROR; // 其他 HTTP 错误都是供应商问题
+  }
+
+  // 优先级 3.2: 空响应错误 - 计入熔断器 + 触发故障切换
+  if (error instanceof EmptyResponseError) {
+    return ErrorCategory.PROVIDER_ERROR; // 空响应视为供应商问题
+  }
+
+  // 优先级 4: 其他所有错误都是系统错误
+  // 包括：
+  // - TypeError: fetch failed (网络层错误)
+  // - ENOTFOUND: DNS 解析失败
+  // - ECONNREFUSED: 连接被拒绝
+  // - ETIMEDOUT: 连接或读取超时
+  // - ECONNRESET: 连接被重置（非客户端主动）
+  return ErrorCategory.SYSTEM_ERROR;
+}
+
+/**
+ * HTTP/2 协议错误检测模式
+ *
+ * 包含常见的 HTTP/2 协议层错误标识：
+ * - GOAWAY: 服务器关闭连接
+ * - RST_STREAM: 流被重置
+ * - PROTOCOL_ERROR: 协议错误
+ * - HTTP/2: 通用 HTTP/2 错误
+ * - ERR_HTTP2_*: Node.js/Chromium HTTP/2 错误代码
+ * - NGHTTP2_*: nghttp2 库错误代码
+ * - HTTP_1_1_REQUIRED: 服务器要求 HTTP/1.1
+ * - REFUSED_STREAM: 服务器拒绝流
+ */
+const HTTP2_ERROR_PATTERNS = [
+  "GOAWAY",
+  "RST_STREAM",
+  "PROTOCOL_ERROR",
+  "HTTP/2",
+  "ERR_HTTP2_",
+  "NGHTTP2_",
+  "HTTP_1_1_REQUIRED",
+  "REFUSED_STREAM",
+];
+
+/**
+ * 检测是否为 HTTP/2 协议错误
+ *
+ * HTTP/2 错误通常发生在协议协商或连接层面，例如：
+ * - 服务器不支持 HTTP/2
+ * - HTTP/2 连接被服务器关闭（GOAWAY）
+ * - HTTP/2 流被重置（RST_STREAM）
+ *
+ * 检测逻辑：
+ * 1. 检查错误名称
+ * 2. 检查错误消息
+ * 3. 检查错误代码（Node.js 风格）
+ *
+ * @param error - 错误对象
+ * @returns 是否为 HTTP/2 协议错误
+ *
+ * @example
+ * // Node.js HTTP/2 错误
+ * isHttp2Error(new Error('ERR_HTTP2_GOAWAY_SESSION')) // true
+ *
+ * // 通用 HTTP/2 错误
+ * isHttp2Error(new Error('HTTP/2 protocol error')) // true
+ *
+ * // 非 HTTP/2 错误
+ * isHttp2Error(new Error('Connection refused')) // false
+ */
+export function isHttp2Error(error: Error): boolean {
+  // 组合错误信息进行检测
+  const errorString = [error.name, error.message, (error as NodeJS.ErrnoException).code ?? ""]
+    .join(" ")
+    .toUpperCase();
+
+  return HTTP2_ERROR_PATTERNS.some((pattern) => errorString.includes(pattern.toUpperCase()));
+}
+
+/**
+ * SSL/TLS Certificate Error Detection Patterns
+ *
+ * Covers common SSL certificate validation errors:
+ * - Certificate hostname mismatch (altname validation)
+ * - Self-signed certificates
+ * - Expired certificates
+ * - Certificate chain validation failures
+ * - Unable to verify issuer
+ */
+const SSL_ERROR_PATTERNS = [
+  "certificate",
+  "ssl",
+  "tls",
+  "cert_",
+  "unable to verify",
+  "self signed",
+  "hostname mismatch",
+  "unable_to_get_issuer_cert",
+  "cert_has_expired",
+  "depth_zero_self_signed_cert",
+  "unable_to_verify_leaf_signature",
+  "err_tls_cert_altname_invalid",
+  "cert_untrusted",
+  "altnames",
+];
+
+/**
+ * Detect if an error is an SSL/TLS certificate error
+ *
+ * SSL certificate errors occur during TLS handshake when:
+ * - Certificate hostname doesn't match the requested domain
+ * - Certificate is self-signed and not trusted
+ * - Certificate has expired
+ * - Certificate chain cannot be verified
+ *
+ * Detection logic:
+ * 1. Check error name
+ * 2. Check error message
+ * 3. Check error code (Node.js style)
+ * 4. Check nested cause (for wrapped errors)
+ *
+ * @param error - Error object to check
+ * @returns true if the error is an SSL certificate error
+ *
+ * @example
+ * // Certificate hostname mismatch
+ * isSSLCertificateError(new Error('ERR_TLS_CERT_ALTNAME_INVALID')) // true
+ *
+ * // Self-signed certificate
+ * isSSLCertificateError(new Error('self signed certificate')) // true
+ *
+ * // Non-SSL error
+ * isSSLCertificateError(new Error('Connection refused')) // false
+ */
+export function isSSLCertificateError(error: unknown): boolean {
+  // Handle non-Error objects
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  // Combine error information for detection
+  const errorString = [error.name, error.message, (error as NodeJS.ErrnoException).code ?? ""]
+    .join(" ")
+    .toLowerCase();
+
+  // Check if any SSL pattern matches
+  if (SSL_ERROR_PATTERNS.some((pattern) => errorString.includes(pattern.toLowerCase()))) {
+    return true;
+  }
+
+  // Check nested cause (for wrapped errors like "Request failed" with SSL cause)
+  if (error.cause instanceof Error) {
+    return isSSLCertificateError(error.cause);
+  }
+
+  return false;
+}
+
+const SENSITIVE_HEADERS = new Set([
+  "authorization",
+  "proxy-authorization", // 代理认证
+  "x-api-key",
+  "api-key",
+  "anthropic-api-key",
+  "x-goog-api-key",
+  "x-auth-token", // 通用认证令牌
+  "cookie",
+  "set-cookie",
+]);
+
+const SENSITIVE_URL_PARAMS = new Set([
+  "key",
+  "api_key",
+  "api-key", // 连字符形式
+  "apikey",
+  "apiKey", // 驼峰形式
+  "token",
+  "access_token",
+  "auth_token", // 认证令牌
+  "secret",
+  "client_secret", // OAuth client secret
+  "password", // 密码参数
+]);
+
+const REQUEST_BODY_MAX_LENGTH = 2000;
+
+/** 敏感值遮罩：保留前缀长度 */
+const MASK_PREFIX_LENGTH = 4;
+/** 敏感值遮罩：保留后缀长度 */
+const MASK_SUFFIX_LENGTH = 4;
+/** 敏感值遮罩：最小长度阈值（低于此值完全遮罩） */
+const MASK_MIN_LENGTH = 8;
+
+/**
+ * 遮罩敏感值
+ *
+ * @param value - 原始敏感值
+ * @returns 遮罩后的值（短于 8 字符返回 [REDACTED]，否则保留前后 4 字符）
+ */
+function maskSensitiveValue(value: string): string {
+  const trimmed = value.trim();
+
+  if (trimmed.length <= MASK_MIN_LENGTH) {
+    return "[REDACTED]";
+  }
+
+  return `${trimmed.slice(0, MASK_PREFIX_LENGTH)}******${trimmed.slice(-MASK_SUFFIX_LENGTH)}`;
+}
+
+/**
+ * 遮罩 Authorization 头部值
+ *
+ * 特殊处理 Bearer token，保留 "Bearer " 前缀便于识别认证类型
+ *
+ * @param value - 原始 Authorization 值
+ * @returns 遮罩后的值
+ */
+function maskAuthorizationValue(value: string): string {
+  const trimmed = value.trim();
+
+  // Bearer token 保留前缀
+  const bearerMatch = trimmed.match(/^Bearer\s+(.+)$/i);
+  if (bearerMatch) {
+    const token = bearerMatch[1]?.trim() ?? "";
+    return `Bearer ${maskSensitiveValue(token)}`;
+  }
+
+  // Basic 认证完全隐藏（Base64 解码后包含用户名密码）
+  const basicMatch = trimmed.match(/^Basic\s+(.+)$/i);
+  if (basicMatch) {
+    return "Basic [REDACTED]";
+  }
+
+  return maskSensitiveValue(trimmed);
+}
+
+/**
+ * 脱敏请求头中的敏感信息
+ *
+ * 支持 Headers 对象或已序列化的字符串格式。
+ * 会遮罩 authorization、x-api-key 等敏感头部的值。
+ *
+ * @param headers - Web API Headers 对象或已格式化的请求头字符串
+ * @returns 脱敏后的请求头字符串（每行格式: "header-name: value"）
+ */
+export function sanitizeHeaders(headers: Headers | string): string {
+  if (headers instanceof Headers) {
+    const collected: string[] = [];
+    headers.forEach((value, key) => {
+      const lowerKey = key.toLowerCase();
+      if (SENSITIVE_HEADERS.has(lowerKey)) {
+        const maskedValue =
+          lowerKey === "authorization" ? maskAuthorizationValue(value) : maskSensitiveValue(value);
+        collected.push(`${key}: ${maskedValue}`);
+        return;
+      }
+
+      collected.push(`${key}: ${value}`);
+    });
+
+    return collected.length > 0 ? collected.join("\n") : "(empty)";
+  }
+
+  const trimmed = headers.trim();
+  if (!trimmed) return "(empty)";
+  if (trimmed === "(empty)") return "(empty)";
+
+  const lines = headers.split(/\r?\n/);
+  const sanitizedLines = lines.map((line) => {
+    const colonIndex = line.indexOf(":");
+    if (colonIndex === -1) return line;
+
+    const name = line.slice(0, colonIndex).trim();
+    const value = line.slice(colonIndex + 1).trim();
+    if (!name) return line;
+
+    const lowerName = name.toLowerCase();
+    if (!SENSITIVE_HEADERS.has(lowerName)) return line;
+
+    const maskedValue =
+      lowerName === "authorization" ? maskAuthorizationValue(value) : maskSensitiveValue(value);
+    return `${name}: ${maskedValue}`;
+  });
+
+  return sanitizedLines.join("\n");
+}
+
+/**
+ * 脱敏 URL 中的敏感查询参数
+ *
+ * 敏感参数（如 api_key、token 等）的值会被替换为 [REDACTED]
+ *
+ * @param url - URL 对象或字符串
+ * @returns 脱敏后的 URL 字符串
+ */
+export function sanitizeUrl(url: string | URL): string {
+  // 防御性处理空值
+  if (!url) {
+    return "(empty url)";
+  }
+
+  if (typeof url === "string" && !url.trim()) {
+    return "(empty url)";
+  }
+
+  let parsedUrl: URL;
+  let isRelative = false;
+
+  if (url instanceof URL) {
+    parsedUrl = new URL(url.href);
+  } else {
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      // 兼容相对路径（仅用于容错，正常情况下 ProxySession.requestUrl 是绝对 URL）
+      isRelative = true;
+      parsedUrl = new URL(url, "http://localhost");
+    }
+  }
+
+  const originalParams = new URLSearchParams(parsedUrl.search);
+  const queryParts: string[] = [];
+  for (const [key, value] of originalParams) {
+    const encodedKey = encodeURIComponent(key);
+    if (SENSITIVE_URL_PARAMS.has(key.toLowerCase())) {
+      queryParts.push(`${encodedKey}=[REDACTED]`);
+      continue;
+    }
+    queryParts.push(`${encodedKey}=${encodeURIComponent(value)}`);
+  }
+
+  const search = queryParts.length > 0 ? `?${queryParts.join("&")}` : "";
+
+  if (isRelative) {
+    return `${parsedUrl.pathname}${search}${parsedUrl.hash}`;
+  }
+
+  return `${parsedUrl.origin}${parsedUrl.pathname}${search}${parsedUrl.hash}`;
+}
+
+/**
+ * 截断请求体
+ *
+ * 限制请求体长度为 2000 字符，防止决策链数据过大
+ *
+ * @param body - 请求体字符串（建议使用 session.request.log 优化后的格式）
+ * @returns 截断结果对象，包含截断后的 body 和 truncated 标记
+ */
+export function truncateRequestBody(body: string | null | undefined): {
+  body: string;
+  truncated: boolean;
+} {
+  // 防御性处理空值
+  if (body === null || body === undefined || body === "") {
+    return { body: "(no body)", truncated: false };
+  }
+
+  if (body.length <= REQUEST_BODY_MAX_LENGTH) {
+    return { body, truncated: false };
+  }
+
+  return { body: body.slice(0, REQUEST_BODY_MAX_LENGTH), truncated: true };
+}
+
+/**
+ * 构建请求详情（用于 errorDetails.request）
+ *
+ * 从 ProxySession 提取请求信息，自动进行脱敏和截断处理
+ *
+ * 存储策略受 STORE_SESSION_MESSAGES 控制：
+ * - false（默认）：请求体中的 message 内容脱敏为 [REDACTED]
+ * - true：原样存储请求体内容
+ *
+ * @param session - 代理会话对象
+ * @returns 脱敏和截断后的请求详情
+ */
+export function buildRequestDetails(
+  session: ProxySession
+): NonNullable<ProviderChainItem["errorDetails"]>["request"] {
+  const { body: rawBody, truncated } = truncateRequestBody(session.request.log);
+
+  // 根据配置决定是否脱敏请求体
+  const storeMessages = getEnvConfig().STORE_SESSION_MESSAGES;
+  const body = storeMessages ? rawBody : redactJsonString(rawBody);
+
+  return {
+    url: sanitizeUrl(session.requestUrl),
+    method: session.method,
+    headers: sanitizeHeaders(session.headers),
+    body,
+    bodyTruncated: truncated,
+  };
+}

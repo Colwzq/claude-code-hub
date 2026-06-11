@@ -1,0 +1,16 @@
+{
+  "core": "コア",
+  "tabs": {
+    "basic": "基本情報",
+    "routing": "ルーティング",
+    "limits": "制限",
+    "network": "ネットワーク",
+    "testing": "テスト",
+    "scheduling": "スケジューリング",
+    "options": "オプション",
+    "activeTime": "アクティブ時間",
+    "circuitBreaker": "サーキットブレーカー",
+    "timeout": "タイムアウト",
+    "stepProgress": "ステップ進捗"
+  }
+}

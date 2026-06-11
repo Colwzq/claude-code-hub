@@ -1,0 +1,258 @@
+import { PROVIDER_TIMEOUT_DEFAULTS } from "@/lib/constants/provider.constants";
+import { normalizeProviderModelRedirectRules } from "@/lib/provider-model-redirects";
+import { formatCostForStorage } from "@/lib/utils/currency";
+import type { Key } from "@/types/key";
+import type { MessageRequest } from "@/types/message";
+import type { ModelPrice } from "@/types/model-price";
+import type { Provider } from "@/types/provider";
+import type { ResponseFixerConfig, SystemSettings } from "@/types/system-config";
+import type { User } from "@/types/user";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function toUser(dbUser: any): User {
+  const parseOptionalNumber = (value: unknown): number | null | undefined => {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    const parsed = Number.parseFloat(String(value));
+    return Number.isNaN(parsed) ? null : parsed;
+  };
+
+  const parseOptionalInteger = (value: unknown): number | null | undefined => {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    const parsed = Number.parseInt(String(value), 10);
+    return Number.isNaN(parsed) ? null : parsed;
+  };
+
+  return {
+    ...dbUser,
+    description: dbUser?.description || "",
+    role: (dbUser?.role as User["role"]) || "user",
+    rpm: (() => {
+      if (dbUser?.rpm === null || dbUser?.rpm === undefined) return null;
+      const parsed = Number(dbUser.rpm);
+      return parsed > 0 ? parsed : null;
+    })(),
+    dailyQuota: (() => {
+      if (dbUser?.dailyQuota === null || dbUser?.dailyQuota === undefined) return null;
+      const parsed = Number.parseFloat(dbUser.dailyQuota);
+      return parsed > 0 ? parsed : null;
+    })(),
+    providerGroup: dbUser?.providerGroup ?? null,
+    tags: dbUser?.tags ?? [],
+    limit5hUsd: parseOptionalNumber(dbUser?.limit5hUsd),
+    limit5hResetMode: dbUser?.limit5hResetMode ?? "rolling",
+    limitWeeklyUsd: parseOptionalNumber(dbUser?.limitWeeklyUsd),
+    limitMonthlyUsd: parseOptionalNumber(dbUser?.limitMonthlyUsd),
+    limitTotalUsd: parseOptionalNumber(dbUser?.limitTotalUsd),
+    limitConcurrentSessions: parseOptionalInteger(dbUser?.limitConcurrentSessions),
+    dailyResetMode: dbUser?.dailyResetMode ?? "fixed",
+    dailyResetTime: dbUser?.dailyResetTime ?? "00:00",
+    isEnabled: dbUser?.isEnabled ?? true,
+    expiresAt: dbUser?.expiresAt ? new Date(dbUser.expiresAt) : null,
+    costResetAt: dbUser?.costResetAt ? new Date(dbUser.costResetAt) : null,
+    limit5hCostResetAt: dbUser?.limit5hCostResetAt ? new Date(dbUser.limit5hCostResetAt) : null,
+    allowedClients: dbUser?.allowedClients ?? [],
+    blockedClients: dbUser?.blockedClients ?? [],
+    allowedModels: dbUser?.allowedModels ?? [],
+    createdAt: dbUser?.createdAt ? new Date(dbUser.createdAt) : new Date(),
+    updatedAt: dbUser?.updatedAt ? new Date(dbUser.updatedAt) : new Date(),
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function toKey(dbKey: any): Key {
+  return {
+    ...dbKey,
+    isEnabled: dbKey?.isEnabled ?? true,
+    canLoginWebUi: dbKey?.canLoginWebUi ?? true,
+    limit5hUsd: dbKey?.limit5hUsd ? parseFloat(dbKey.limit5hUsd) : null,
+    limit5hResetMode: dbKey?.limit5hResetMode ?? "rolling",
+    limitDailyUsd: dbKey?.limitDailyUsd ? parseFloat(dbKey.limitDailyUsd) : null,
+    dailyResetMode: dbKey?.dailyResetMode ?? "fixed",
+    dailyResetTime: dbKey?.dailyResetTime ?? "00:00",
+    limitWeeklyUsd: dbKey?.limitWeeklyUsd ? parseFloat(dbKey.limitWeeklyUsd) : null,
+    limitMonthlyUsd: dbKey?.limitMonthlyUsd ? parseFloat(dbKey.limitMonthlyUsd) : null,
+    limitTotalUsd:
+      dbKey?.limitTotalUsd !== null && dbKey?.limitTotalUsd !== undefined
+        ? parseFloat(dbKey.limitTotalUsd)
+        : null,
+    costResetAt: dbKey?.costResetAt ? new Date(dbKey.costResetAt) : null,
+    limitConcurrentSessions: dbKey?.limitConcurrentSessions ?? 0,
+    providerGroup: dbKey?.providerGroup ?? null,
+    cacheTtlPreference: dbKey?.cacheTtlPreference ?? null,
+    createdAt: dbKey?.createdAt ? new Date(dbKey.createdAt) : new Date(),
+    updatedAt: dbKey?.updatedAt ? new Date(dbKey.updatedAt) : new Date(),
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function toProvider(dbProvider: any): Provider {
+  return {
+    ...dbProvider,
+    providerVendorId: dbProvider?.providerVendorId ?? null,
+    isEnabled: dbProvider?.isEnabled ?? true,
+    weight: dbProvider?.weight ?? 1,
+    priority: dbProvider?.priority ?? 0,
+    groupPriorities: dbProvider?.groupPriorities ?? null,
+    costMultiplier: dbProvider?.costMultiplier ? parseFloat(dbProvider.costMultiplier) : 1.0,
+    groupTag: dbProvider?.groupTag ?? null,
+    providerType: dbProvider?.providerType ?? "claude",
+    preserveClientIp: dbProvider?.preserveClientIp ?? false,
+    disableSessionReuse: dbProvider?.disableSessionReuse ?? false,
+    modelRedirects: normalizeProviderModelRedirectRules(dbProvider?.modelRedirects),
+    activeTimeStart: dbProvider?.activeTimeStart ?? null,
+    activeTimeEnd: dbProvider?.activeTimeEnd ?? null,
+    mcpPassthroughType: dbProvider?.mcpPassthroughType ?? "none",
+    mcpPassthroughUrl: dbProvider?.mcpPassthroughUrl ?? null,
+    limit5hUsd: dbProvider?.limit5hUsd ? parseFloat(dbProvider.limit5hUsd) : null,
+    limit5hResetMode: dbProvider?.limit5hResetMode ?? "rolling",
+    limitDailyUsd: dbProvider?.limitDailyUsd ? parseFloat(dbProvider.limitDailyUsd) : null,
+    dailyResetMode: dbProvider?.dailyResetMode ?? "fixed",
+    dailyResetTime: dbProvider?.dailyResetTime ?? "00:00",
+    limitWeeklyUsd: dbProvider?.limitWeeklyUsd ? parseFloat(dbProvider.limitWeeklyUsd) : null,
+    limitMonthlyUsd: dbProvider?.limitMonthlyUsd ? parseFloat(dbProvider.limitMonthlyUsd) : null,
+    limitTotalUsd:
+      dbProvider?.limitTotalUsd !== null && dbProvider?.limitTotalUsd !== undefined
+        ? parseFloat(dbProvider.limitTotalUsd)
+        : null,
+    totalCostResetAt: dbProvider?.totalCostResetAt ? new Date(dbProvider.totalCostResetAt) : null,
+    limitConcurrentSessions: dbProvider?.limitConcurrentSessions ?? 0,
+    maxRetryAttempts:
+      dbProvider?.maxRetryAttempts !== undefined && dbProvider?.maxRetryAttempts !== null
+        ? Number(dbProvider.maxRetryAttempts)
+        : null,
+    circuitBreakerFailureThreshold: dbProvider?.circuitBreakerFailureThreshold ?? 5,
+    circuitBreakerOpenDuration: dbProvider?.circuitBreakerOpenDuration ?? 1800000,
+    circuitBreakerHalfOpenSuccessThreshold: dbProvider?.circuitBreakerHalfOpenSuccessThreshold ?? 2,
+    proxyUrl: dbProvider?.proxyUrl ?? null,
+    proxyFallbackToDirect: dbProvider?.proxyFallbackToDirect ?? false,
+    firstByteTimeoutStreamingMs:
+      dbProvider?.firstByteTimeoutStreamingMs ??
+      PROVIDER_TIMEOUT_DEFAULTS.FIRST_BYTE_TIMEOUT_STREAMING_MS,
+    streamingIdleTimeoutMs:
+      dbProvider?.streamingIdleTimeoutMs ?? PROVIDER_TIMEOUT_DEFAULTS.STREAMING_IDLE_TIMEOUT_MS,
+    requestTimeoutNonStreamingMs:
+      dbProvider?.requestTimeoutNonStreamingMs ??
+      PROVIDER_TIMEOUT_DEFAULTS.REQUEST_TIMEOUT_NON_STREAMING_MS,
+    websiteUrl: dbProvider?.websiteUrl ?? null,
+    faviconUrl: dbProvider?.faviconUrl ?? null,
+    cacheTtlPreference: dbProvider?.cacheTtlPreference ?? null,
+    swapCacheTtlBilling: dbProvider?.swapCacheTtlBilling ?? false,
+    context1mPreference: dbProvider?.context1mPreference ?? null,
+    codexReasoningEffortPreference: dbProvider?.codexReasoningEffortPreference ?? null,
+    codexReasoningSummaryPreference: dbProvider?.codexReasoningSummaryPreference ?? null,
+    codexTextVerbosityPreference: dbProvider?.codexTextVerbosityPreference ?? null,
+    codexParallelToolCallsPreference: dbProvider?.codexParallelToolCallsPreference ?? null,
+    codexServiceTierPreference: dbProvider?.codexServiceTierPreference ?? null,
+    anthropicMaxTokensPreference: dbProvider?.anthropicMaxTokensPreference ?? null,
+    anthropicThinkingBudgetPreference: dbProvider?.anthropicThinkingBudgetPreference ?? null,
+    anthropicAdaptiveThinking: dbProvider?.anthropicAdaptiveThinking ?? null,
+    geminiGoogleSearchPreference: dbProvider?.geminiGoogleSearchPreference ?? null,
+    tpm: dbProvider?.tpm ?? null,
+    rpm: dbProvider?.rpm ?? null,
+    rpd: dbProvider?.rpd ?? null,
+    cc: dbProvider?.cc ?? null,
+    createdAt: dbProvider?.createdAt ? new Date(dbProvider.createdAt) : new Date(),
+    updatedAt: dbProvider?.updatedAt ? new Date(dbProvider.updatedAt) : new Date(),
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function toMessageRequest(dbMessage: any): MessageRequest {
+  return {
+    ...dbMessage,
+    costMultiplier: dbMessage?.costMultiplier ? parseFloat(dbMessage.costMultiplier) : undefined,
+    requestSequence: dbMessage?.requestSequence ?? undefined,
+    createdAt: dbMessage?.createdAt ? new Date(dbMessage.createdAt) : new Date(),
+    updatedAt: dbMessage?.updatedAt ? new Date(dbMessage.updatedAt) : new Date(),
+    costUsd: (() => {
+      const formatted = formatCostForStorage(dbMessage?.costUsd);
+      return formatted ?? undefined;
+    })(),
+    cacheCreation5mInputTokens: dbMessage?.cacheCreation5mInputTokens ?? undefined,
+    cacheCreation1hInputTokens: dbMessage?.cacheCreation1hInputTokens ?? undefined,
+    cacheTtlApplied: dbMessage?.cacheTtlApplied ?? null,
+    context1mApplied: dbMessage?.context1mApplied ?? false,
+    swapCacheTtlApplied: dbMessage?.swapCacheTtlApplied ?? false,
+    specialSettings: dbMessage?.specialSettings ?? null,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function toModelPrice(dbPrice: any): ModelPrice {
+  return {
+    ...dbPrice,
+    source: dbPrice?.source ?? "litellm", // 默认为 litellm（向后兼容）
+    createdAt: dbPrice?.createdAt ? new Date(dbPrice.createdAt) : new Date(),
+    updatedAt: dbPrice?.updatedAt ? new Date(dbPrice.updatedAt) : new Date(),
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function toSystemSettings(dbSettings: any): SystemSettings {
+  const defaultResponseFixerConfig: ResponseFixerConfig = {
+    fixTruncatedJson: true,
+    fixSseFormat: true,
+    fixEncoding: true,
+    maxJsonDepth: 200,
+    maxFixSize: 1024 * 1024,
+  };
+
+  return {
+    id: dbSettings?.id ?? 0,
+    siteTitle: dbSettings?.siteTitle ?? "Claude Code Hub",
+    allowGlobalUsageView: dbSettings?.allowGlobalUsageView ?? true,
+    currencyDisplay: dbSettings?.currencyDisplay ?? "USD",
+    billingModelSource: dbSettings?.billingModelSource ?? "original",
+    codexPriorityBillingSource:
+      dbSettings?.codexPriorityBillingSource === "requested" ||
+      dbSettings?.codexPriorityBillingSource === "actual"
+        ? dbSettings.codexPriorityBillingSource
+        : "requested",
+    timezone: dbSettings?.timezone ?? null,
+    enableAutoCleanup: dbSettings?.enableAutoCleanup ?? false,
+    cleanupRetentionDays: dbSettings?.cleanupRetentionDays ?? 30,
+    cleanupSchedule: dbSettings?.cleanupSchedule ?? "0 2 * * *",
+    cleanupBatchSize: dbSettings?.cleanupBatchSize ?? 10000,
+    enableClientVersionCheck: dbSettings?.enableClientVersionCheck ?? false,
+    verboseProviderError: dbSettings?.verboseProviderError ?? false,
+    passThroughUpstreamErrorMessage: dbSettings?.passThroughUpstreamErrorMessage ?? true,
+    enableHttp2: dbSettings?.enableHttp2 ?? false,
+    enableHighConcurrencyMode: dbSettings?.enableHighConcurrencyMode ?? false,
+    interceptAnthropicWarmupRequests: dbSettings?.interceptAnthropicWarmupRequests ?? false,
+    enableThinkingSignatureRectifier: dbSettings?.enableThinkingSignatureRectifier ?? true,
+    enableThinkingBudgetRectifier: dbSettings?.enableThinkingBudgetRectifier ?? true,
+    enableBillingHeaderRectifier: dbSettings?.enableBillingHeaderRectifier ?? true,
+    enableResponseInputRectifier: dbSettings?.enableResponseInputRectifier ?? true,
+    allowNonConversationEndpointProviderFallback:
+      dbSettings?.allowNonConversationEndpointProviderFallback ?? true,
+    enableCodexSessionIdCompletion: dbSettings?.enableCodexSessionIdCompletion ?? true,
+    enableClaudeMetadataUserIdInjection: dbSettings?.enableClaudeMetadataUserIdInjection ?? true,
+    enableResponseFixer: dbSettings?.enableResponseFixer ?? true,
+    responseFixerConfig: {
+      ...defaultResponseFixerConfig,
+      ...(dbSettings?.responseFixerConfig ?? {}),
+    },
+    quotaDbRefreshIntervalSeconds: dbSettings?.quotaDbRefreshIntervalSeconds ?? 10,
+    quotaLeasePercent5h: dbSettings?.quotaLeasePercent5h
+      ? parseFloat(dbSettings.quotaLeasePercent5h)
+      : 0.05,
+    quotaLeasePercentDaily: dbSettings?.quotaLeasePercentDaily
+      ? parseFloat(dbSettings.quotaLeasePercentDaily)
+      : 0.05,
+    quotaLeasePercentWeekly: dbSettings?.quotaLeasePercentWeekly
+      ? parseFloat(dbSettings.quotaLeasePercentWeekly)
+      : 0.05,
+    quotaLeasePercentMonthly: dbSettings?.quotaLeasePercentMonthly
+      ? parseFloat(dbSettings.quotaLeasePercentMonthly)
+      : 0.05,
+    quotaLeaseCapUsd: dbSettings?.quotaLeaseCapUsd ? parseFloat(dbSettings.quotaLeaseCapUsd) : null,
+    publicStatusWindowHours: dbSettings?.publicStatusWindowHours ?? 24,
+    publicStatusAggregationIntervalMinutes: dbSettings?.publicStatusAggregationIntervalMinutes ?? 5,
+    ipExtractionConfig: dbSettings?.ipExtractionConfig ?? null,
+    ipGeoLookupEnabled: dbSettings?.ipGeoLookupEnabled ?? true,
+    createdAt: dbSettings?.createdAt ? new Date(dbSettings.createdAt) : new Date(),
+    updatedAt: dbSettings?.updatedAt ? new Date(dbSettings.updatedAt) : new Date(),
+  };
+}

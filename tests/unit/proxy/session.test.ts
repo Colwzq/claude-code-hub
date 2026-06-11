@@ -1,0 +1,874 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { isRawPassthroughEndpointPolicy } from "@/app/v1/_lib/proxy/endpoint-policy";
+import { V1_ENDPOINT_PATHS } from "@/app/v1/_lib/proxy/endpoint-paths";
+import { invalidateSystemSettingsCache } from "@/lib/config";
+import type { ModelPrice, ModelPriceData } from "@/types/model-price";
+import type { SystemSettings } from "@/types/system-config";
+import type { Provider } from "@/types/provider";
+
+vi.mock("@/repository/model-price", () => ({
+  findLatestPriceByModel: vi.fn(),
+}));
+
+vi.mock("@/repository/system-config", () => ({
+  getSystemSettings: vi.fn(),
+}));
+
+import { ProxySession } from "@/app/v1/_lib/proxy/session";
+import { findLatestPriceByModel } from "@/repository/model-price";
+import { getSystemSettings } from "@/repository/system-config";
+
+function makeSystemSettings(
+  billingModelSource: SystemSettings["billingModelSource"]
+): SystemSettings {
+  const now = new Date();
+  return {
+    id: 1,
+    siteTitle: "test",
+    allowGlobalUsageView: false,
+    currencyDisplay: "USD",
+    billingModelSource,
+    codexPriorityBillingSource: "requested",
+    timezone: null,
+    enableAutoCleanup: false,
+    cleanupRetentionDays: 30,
+    cleanupSchedule: "0 2 * * *",
+    cleanupBatchSize: 10000,
+    enableClientVersionCheck: false,
+    verboseProviderError: false,
+    enableHttp2: false,
+    enableHighConcurrencyMode: false,
+    interceptAnthropicWarmupRequests: false,
+    enableThinkingSignatureRectifier: true,
+    enableThinkingBudgetRectifier: true,
+    enableBillingHeaderRectifier: true,
+    enableResponseInputRectifier: true,
+    enableCodexSessionIdCompletion: true,
+    enableClaudeMetadataUserIdInjection: true,
+    enableResponseFixer: true,
+    responseFixerConfig: {
+      fixTruncatedJson: true,
+      fixSseFormat: true,
+      fixEncoding: true,
+      maxJsonDepth: 200,
+      maxFixSize: 1024 * 1024,
+    },
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+beforeEach(() => {
+  invalidateSystemSettingsCache();
+});
+
+function makePriceRecord(modelName: string, priceData: ModelPriceData): ModelPrice {
+  return {
+    id: 1,
+    modelName,
+    priceData,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+}
+
+function createSession({
+  originalModel,
+  redirectedModel,
+  requestUrl,
+  requestMessage,
+}: {
+  originalModel?: string | null;
+  redirectedModel?: string | null;
+  requestUrl?: URL;
+  requestMessage?: Record<string, unknown>;
+}): ProxySession {
+  const session = new (
+    ProxySession as unknown as {
+      new (init: {
+        startTime: number;
+        method: string;
+        requestUrl: URL;
+        headers: Headers;
+        headerLog: string;
+        request: { message: Record<string, unknown>; log: string; model: string | null };
+        userAgent: string | null;
+        context: unknown;
+        clientAbortSignal: AbortSignal | null;
+      }): ProxySession;
+    }
+  )({
+    startTime: Date.now(),
+    method: "POST",
+    requestUrl: requestUrl ?? new URL("http://localhost/v1/messages"),
+    headers: new Headers(),
+    headerLog: "",
+    request: { message: requestMessage ?? {}, log: "(test)", model: redirectedModel ?? null },
+    userAgent: null,
+    context: {},
+    clientAbortSignal: null,
+  });
+
+  if (originalModel !== undefined) {
+    session.setOriginalModel(originalModel);
+  }
+
+  return session;
+}
+
+describe("ProxySession endpoint policy", () => {
+  it.each([
+    V1_ENDPOINT_PATHS.MESSAGES_COUNT_TOKENS,
+    "/V1/RESPONSES/COMPACT/",
+  ])("应在创建时解析 raw passthrough policy: %s", (pathname) => {
+    const session = createSession({
+      redirectedModel: null,
+      requestUrl: new URL(`http://localhost${pathname}`),
+    });
+
+    const policy = session.getEndpointPolicy();
+    expect(isRawPassthroughEndpointPolicy(policy)).toBe(true);
+    expect(policy.trackConcurrentRequests).toBe(false);
+  });
+
+  it("应在请求路径后续变更后保持创建时 policy 不变", () => {
+    const session = createSession({
+      redirectedModel: null,
+      requestUrl: new URL(`http://localhost${V1_ENDPOINT_PATHS.MESSAGES_COUNT_TOKENS}`),
+    });
+
+    const policyAtCreation = session.getEndpointPolicy();
+    session.requestUrl = new URL(`http://localhost${V1_ENDPOINT_PATHS.MESSAGES}`);
+
+    expect(session.getEndpointPolicy()).toBe(policyAtCreation);
+    expect(isRawPassthroughEndpointPolicy(session.getEndpointPolicy())).toBe(true);
+  });
+
+  it("应在 pathname 无法读取时回退到 default policy", () => {
+    const malformedUrl = {
+      get pathname() {
+        throw new Error("broken pathname");
+      },
+    } as unknown as URL;
+
+    const session = createSession({
+      redirectedModel: null,
+      requestUrl: malformedUrl,
+    });
+
+    const policy = session.getEndpointPolicy();
+    expect(isRawPassthroughEndpointPolicy(policy)).toBe(false);
+    expect(policy.kind).toBe("default");
+    expect(policy.trackConcurrentRequests).toBe(true);
+  });
+});
+
+describe("ProxySession.getCachedPriceDataByBillingSource", () => {
+  it("配置 = original 时应优先使用原始模型", async () => {
+    const originalPriceData: ModelPriceData = { input_cost_per_token: 1, output_cost_per_token: 2 };
+    const redirectedPriceData: ModelPriceData = {
+      input_cost_per_token: 3,
+      output_cost_per_token: 4,
+    };
+
+    vi.mocked(getSystemSettings).mockResolvedValue(makeSystemSettings("original"));
+    vi.mocked(findLatestPriceByModel).mockImplementation(async (modelName: string) => {
+      if (modelName === "original-model") {
+        return makePriceRecord(modelName, originalPriceData);
+      }
+      if (modelName === "redirected-model") {
+        return makePriceRecord(modelName, redirectedPriceData);
+      }
+      return null;
+    });
+
+    const session = createSession({
+      originalModel: "original-model",
+      redirectedModel: "redirected-model",
+    });
+
+    const result = await session.getCachedPriceDataByBillingSource();
+    expect(result).toEqual(originalPriceData);
+    expect(findLatestPriceByModel).toHaveBeenCalledTimes(1);
+    expect(findLatestPriceByModel).toHaveBeenCalledWith("original-model");
+  });
+
+  it("配置 = redirected 时应优先使用重定向后模型", async () => {
+    const originalPriceData: ModelPriceData = { input_cost_per_token: 1, output_cost_per_token: 2 };
+    const redirectedPriceData: ModelPriceData = {
+      input_cost_per_token: 3,
+      output_cost_per_token: 4,
+    };
+
+    vi.mocked(getSystemSettings).mockResolvedValue(makeSystemSettings("redirected"));
+    vi.mocked(findLatestPriceByModel).mockImplementation(async (modelName: string) => {
+      if (modelName === "original-model") {
+        return makePriceRecord(modelName, originalPriceData);
+      }
+      if (modelName === "redirected-model") {
+        return makePriceRecord(modelName, redirectedPriceData);
+      }
+      return null;
+    });
+
+    const session = createSession({
+      originalModel: "original-model",
+      redirectedModel: "redirected-model",
+    });
+
+    const result = await session.getCachedPriceDataByBillingSource();
+    expect(result).toEqual(redirectedPriceData);
+    expect(findLatestPriceByModel).toHaveBeenCalledTimes(1);
+    expect(findLatestPriceByModel).toHaveBeenCalledWith("redirected-model");
+  });
+
+  it("应忽略空 priceData 并回退到备选模型", async () => {
+    const redirectedPriceData: ModelPriceData = {
+      input_cost_per_token: 3,
+      output_cost_per_token: 4,
+    };
+
+    vi.mocked(getSystemSettings).mockResolvedValue(makeSystemSettings("original"));
+    vi.mocked(findLatestPriceByModel)
+      .mockResolvedValueOnce(makePriceRecord("original-model", {}))
+      .mockResolvedValueOnce(makePriceRecord("redirected-model", redirectedPriceData));
+
+    const session = createSession({
+      originalModel: "original-model",
+      redirectedModel: "redirected-model",
+    });
+
+    const result = await session.getCachedPriceDataByBillingSource();
+    expect(result).toEqual(redirectedPriceData);
+    expect(findLatestPriceByModel).toHaveBeenCalledTimes(2);
+    expect(findLatestPriceByModel).toHaveBeenNthCalledWith(1, "original-model");
+    expect(findLatestPriceByModel).toHaveBeenNthCalledWith(2, "redirected-model");
+  });
+
+  it("应在主模型无价格时回退到备选模型", async () => {
+    const redirectedPriceData: ModelPriceData = {
+      input_cost_per_token: 3,
+      output_cost_per_token: 4,
+    };
+
+    vi.mocked(getSystemSettings).mockResolvedValue(makeSystemSettings("original"));
+    vi.mocked(findLatestPriceByModel)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(makePriceRecord("redirected-model", redirectedPriceData));
+
+    const session = createSession({
+      originalModel: "original-model",
+      redirectedModel: "redirected-model",
+    });
+
+    const result = await session.getCachedPriceDataByBillingSource();
+    expect(result).toEqual(redirectedPriceData);
+    expect(findLatestPriceByModel).toHaveBeenCalledTimes(2);
+    expect(findLatestPriceByModel).toHaveBeenNthCalledWith(1, "original-model");
+    expect(findLatestPriceByModel).toHaveBeenNthCalledWith(2, "redirected-model");
+  });
+
+  it("应在 getSystemSettings 失败且无缓存时回退到 redirected 并继续价格解析", async () => {
+    const redirectedPriceData: ModelPriceData = {
+      input_cost_per_token: 3,
+      output_cost_per_token: 4,
+    };
+
+    vi.mocked(getSystemSettings).mockRejectedValue(new Error("DB error"));
+    vi.mocked(findLatestPriceByModel).mockResolvedValue(
+      makePriceRecord("redirected-model", redirectedPriceData)
+    );
+
+    const session = createSession({
+      originalModel: "original-model",
+      redirectedModel: "redirected-model",
+    });
+
+    const result = await session.getCachedPriceDataByBillingSource();
+    expect(result).toEqual(redirectedPriceData);
+    expect(getSystemSettings).toHaveBeenCalledTimes(1);
+    expect(findLatestPriceByModel).toHaveBeenCalledTimes(1);
+    expect(findLatestPriceByModel).toHaveBeenCalledWith("redirected-model");
+
+    const internal = session as unknown as { cachedBillingModelSource?: unknown };
+    expect(internal.cachedBillingModelSource).toBe("redirected");
+  });
+
+  it("应在 billingModelSource 非法时回退到 redirected", async () => {
+    const redirectedPriceData: ModelPriceData = {
+      input_cost_per_token: 3,
+      output_cost_per_token: 4,
+    };
+
+    vi.mocked(getSystemSettings).mockResolvedValue({
+      ...makeSystemSettings("redirected"),
+      billingModelSource: "invalid" as any,
+    } as any);
+    vi.mocked(findLatestPriceByModel).mockResolvedValue(
+      makePriceRecord("redirected-model", redirectedPriceData)
+    );
+
+    const session = createSession({
+      originalModel: "original-model",
+      redirectedModel: "redirected-model",
+    });
+
+    const result = await session.getCachedPriceDataByBillingSource();
+    expect(result).toEqual(redirectedPriceData);
+    expect(findLatestPriceByModel).toHaveBeenCalledTimes(1);
+    expect(findLatestPriceByModel).toHaveBeenCalledWith("redirected-model");
+
+    const internal = session as unknown as { cachedBillingModelSource?: unknown };
+    expect(internal.cachedBillingModelSource).toBe("redirected");
+  });
+
+  it("当原始模型等于重定向模型时应避免重复查询", async () => {
+    vi.mocked(getSystemSettings).mockResolvedValue(makeSystemSettings("original"));
+    vi.mocked(findLatestPriceByModel).mockResolvedValue(null);
+
+    const session = createSession({
+      originalModel: "same-model",
+      redirectedModel: "same-model",
+    });
+
+    const result = await session.getCachedPriceDataByBillingSource();
+    expect(result).toBeNull();
+    expect(findLatestPriceByModel).toHaveBeenCalledTimes(1);
+    expect(findLatestPriceByModel).toHaveBeenCalledWith("same-model");
+  });
+
+  it("并发调用时应只读取一次配置", async () => {
+    const priceData: ModelPriceData = { input_cost_per_token: 1, output_cost_per_token: 2 };
+
+    vi.mocked(getSystemSettings).mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return makeSystemSettings("redirected");
+    });
+    vi.mocked(findLatestPriceByModel).mockResolvedValue(
+      makePriceRecord("redirected-model", priceData)
+    );
+
+    const session = createSession({
+      originalModel: "original-model",
+      redirectedModel: "redirected-model",
+    });
+
+    const p1 = session.getCachedPriceDataByBillingSource();
+    const p2 = session.getCachedPriceDataByBillingSource();
+    await Promise.all([p1, p2]);
+
+    expect(getSystemSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("应缓存配置避免重复读取", async () => {
+    const priceData: ModelPriceData = { input_cost_per_token: 1, output_cost_per_token: 2 };
+
+    vi.mocked(getSystemSettings).mockResolvedValue(makeSystemSettings("redirected"));
+    vi.mocked(findLatestPriceByModel).mockResolvedValue(
+      makePriceRecord("redirected-model", priceData)
+    );
+
+    const session = createSession({
+      originalModel: "original-model",
+      redirectedModel: "redirected-model",
+    });
+
+    await session.getCachedPriceDataByBillingSource();
+    await session.getCachedPriceDataByBillingSource();
+
+    expect(getSystemSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("应缓存价格数据避免重复查询", async () => {
+    const priceData: ModelPriceData = { input_cost_per_token: 1, output_cost_per_token: 2 };
+
+    vi.mocked(getSystemSettings).mockResolvedValue(makeSystemSettings("redirected"));
+    vi.mocked(findLatestPriceByModel).mockResolvedValue(
+      makePriceRecord("redirected-model", priceData)
+    );
+
+    const session = createSession({
+      originalModel: "original-model",
+      redirectedModel: "redirected-model",
+    });
+
+    await session.getCachedPriceDataByBillingSource();
+    await session.getCachedPriceDataByBillingSource();
+
+    expect(findLatestPriceByModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("应缓存 resolved pricing 避免重复查询", async () => {
+    const redirectedPriceData: ModelPriceData = {
+      mode: "responses",
+      model_family: "gpt",
+      pricing: {
+        openai: {
+          input_cost_per_token: 3,
+          output_cost_per_token: 4,
+        },
+      },
+    };
+
+    vi.mocked(getSystemSettings).mockResolvedValue(makeSystemSettings("redirected"));
+    vi.mocked(findLatestPriceByModel).mockResolvedValue(
+      makePriceRecord("redirected-model", redirectedPriceData)
+    );
+
+    const session = createSession({
+      originalModel: "original-model",
+      redirectedModel: "redirected-model",
+    });
+
+    const provider = {
+      id: 77,
+      name: "ChatGPT",
+      url: "https://chatgpt.com/backend-api/codex",
+      providerType: "codex",
+    } as any;
+
+    await session.getResolvedPricingByBillingSource(provider);
+    await session.getResolvedPricingByBillingSource(provider);
+
+    expect(findLatestPriceByModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("无模型时应返回 null", async () => {
+    const session = createSession({ redirectedModel: null });
+    const result = await session.getCachedPriceDataByBillingSource();
+
+    expect(result).toBeNull();
+  });
+});
+
+function createSessionForHeaders(headers: Headers): ProxySession {
+  // 使用 ProxySession 的内部构造方法创建测试实例
+  const testSession = ProxySession.fromContext as any;
+  const session = Object.create(ProxySession.prototype);
+
+  Object.assign(session, {
+    startTime: Date.now(),
+    method: "POST",
+    requestUrl: new URL("https://example.com/v1/messages"),
+    headers,
+    originalHeaders: new Headers(headers), // 同步更新 originalHeaders
+    headerLog: JSON.stringify(Object.fromEntries(headers.entries())),
+    request: { message: {}, log: "" },
+    userAgent: headers.get("user-agent"),
+    context: null,
+    clientAbortSignal: null,
+    userName: "test-user",
+    authState: null,
+    provider: null,
+    messageContext: null,
+    sessionId: null,
+    requestSequence: 1,
+    originalFormat: "claude",
+    providerType: null,
+    originalModelName: null,
+    originalUrlPathname: null,
+    providerChain: [],
+    cacheTtlResolved: null,
+    context1mApplied: false,
+    cachedPriceData: undefined,
+    cachedBillingModelSource: undefined,
+  });
+
+  return session;
+}
+
+describe("ProxySession - isHeaderModified", () => {
+  it("应该检测到被修改的 header", () => {
+    const headers = new Headers([["user-agent", "original"]]);
+    const session = createSessionForHeaders(headers);
+
+    session.headers.set("user-agent", "modified");
+
+    expect(session.isHeaderModified("user-agent")).toBe(true);
+  });
+
+  it("应该检测未修改的 header", () => {
+    const headers = new Headers([["user-agent", "same"]]);
+    const session = createSessionForHeaders(headers);
+
+    expect(session.isHeaderModified("user-agent")).toBe(false);
+  });
+
+  it("应该处理不存在的 header", () => {
+    const headers = new Headers();
+    const session = createSessionForHeaders(headers);
+
+    expect(session.isHeaderModified("x-custom")).toBe(false);
+  });
+
+  it("应该检测到被删除的 header", () => {
+    const headers = new Headers([["user-agent", "original"]]);
+    const session = createSessionForHeaders(headers);
+
+    session.headers.delete("user-agent");
+
+    expect(session.isHeaderModified("user-agent")).toBe(true);
+  });
+
+  it("应该检测到新增的 header", () => {
+    const headers = new Headers();
+    const session = createSessionForHeaders(headers);
+
+    session.headers.set("x-new-header", "new-value");
+
+    expect(session.isHeaderModified("x-new-header")).toBe(true);
+  });
+
+  it("应该区分空字符串和 null", () => {
+    const headers = new Headers([["x-test", ""]]);
+    const session = createSessionForHeaders(headers);
+
+    session.headers.delete("x-test");
+
+    expect(session.isHeaderModified("x-test")).toBe(true); // "" -> null
+    expect(session.headers.get("x-test")).toBeNull();
+  });
+});
+
+describe("ProxySession.isWarmupRequest", () => {
+  it("应识别合法的 Warmup 请求（忽略大小写与首尾空格）", () => {
+    const session = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: {
+        model: "claude-sonnet-4-5-20250929",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "  WaRmUp  ",
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(session.isWarmupRequest()).toBe(true);
+  });
+
+  it("endpoint 非 /v1/messages 时不应命中", () => {
+    const session = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestUrl: new URL("http://localhost/v1/messages/count_tokens"),
+      requestMessage: {
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Warmup",
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(session.isWarmupRequest()).toBe(false);
+  });
+
+  it("缺少 cache_control 或 type 不为 ephemeral 时不应命中", () => {
+    const missingCacheControl = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: {
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "Warmup" }],
+          },
+        ],
+      },
+    });
+    expect(missingCacheControl.isWarmupRequest()).toBe(false);
+
+    const wrongCacheControl = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: {
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Warmup",
+                cache_control: { type: "persistent" },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(wrongCacheControl.isWarmupRequest()).toBe(false);
+  });
+
+  it("messages/content 非严格形态时不应命中（防误判）", () => {
+    const multiMessages = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: {
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Warmup",
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Warmup",
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(multiMessages.isWarmupRequest()).toBe(false);
+
+    const multiBlocks = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: {
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Warmup",
+                cache_control: { type: "ephemeral" },
+              },
+              { type: "text", text: "Warmup", cache_control: { type: "ephemeral" } },
+            ],
+          },
+        ],
+      },
+    });
+    expect(multiBlocks.isWarmupRequest()).toBe(false);
+  });
+
+  it("messages/role/content 结构异常时不应命中", () => {
+    const missingMessages = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: {},
+    });
+    expect(missingMessages.isWarmupRequest()).toBe(false);
+
+    const nonArrayMessages = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: { messages: "Warmup" },
+    });
+    expect(nonArrayMessages.isWarmupRequest()).toBe(false);
+
+    const roleNotUser = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: {
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: "Warmup",
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(roleNotUser.isWarmupRequest()).toBe(false);
+
+    const contentNotArray = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: {
+        messages: [{ role: "user", content: "Warmup" }],
+      },
+    });
+    expect(contentNotArray.isWarmupRequest()).toBe(false);
+  });
+
+  it("block/text/cache_control 结构异常时不应命中", () => {
+    const blockNotObject = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: {
+        messages: [{ role: "user", content: [null] }],
+      },
+    });
+    expect(blockNotObject.isWarmupRequest()).toBe(false);
+
+    const typeNotText = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: {
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                text: "Warmup",
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(typeNotText.isWarmupRequest()).toBe(false);
+
+    const textNotString = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: {
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: 123,
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(textNotString.isWarmupRequest()).toBe(false);
+
+    const cacheControlNotObject = createSession({
+      redirectedModel: "claude-sonnet-4-5-20250929",
+      requestMessage: {
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Warmup",
+                cache_control: null,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(cacheControlNotObject.isWarmupRequest()).toBe(false);
+  });
+});
+
+describe("ProxySession.addProviderToChain - endpoint audit", () => {
+  it("应写入 vendorId/providerType/endpointId/endpointUrl", () => {
+    const session = createSession({ redirectedModel: null });
+    const provider = {
+      id: 1,
+      name: "p1",
+      providerVendorId: 123,
+      providerType: "claude",
+      priority: 0,
+      weight: 1,
+      costMultiplier: 1,
+      groupTag: null,
+    } as unknown as Provider;
+
+    session.addProviderToChain(provider, {
+      endpointId: 42,
+      endpointUrl: "https://api.example.com",
+    });
+
+    const chain = session.getProviderChain();
+    expect(chain).toHaveLength(1);
+    expect(chain[0]).toEqual(
+      expect.objectContaining({
+        id: 1,
+        name: "p1",
+        vendorId: 123,
+        providerType: "claude",
+        endpointId: 42,
+        endpointUrl: "https://api.example.com",
+      })
+    );
+  });
+
+  it("同一 provider 连续写入且不带 attemptNumber 时应去重", () => {
+    const session = createSession({ redirectedModel: null });
+    const provider = {
+      id: 1,
+      name: "p1",
+      providerVendorId: 123,
+      providerType: "claude",
+      priority: 0,
+      weight: 1,
+      costMultiplier: 1,
+      groupTag: null,
+    } as unknown as Provider;
+
+    session.addProviderToChain(provider, { endpointId: 1, endpointUrl: "https://a.example.com" });
+    session.addProviderToChain(provider, { endpointId: 2, endpointUrl: "https://b.example.com" });
+
+    const chain = session.getProviderChain();
+    expect(chain).toHaveLength(1);
+    expect(chain[0]).toEqual(
+      expect.objectContaining({
+        endpointId: 1,
+        endpointUrl: "https://a.example.com",
+      })
+    );
+  });
+
+  it("同一 provider 连续写入且带 attemptNumber 时应保留多条", () => {
+    const session = createSession({ redirectedModel: null });
+    const provider = {
+      id: 1,
+      name: "p1",
+      providerVendorId: 123,
+      providerType: "claude",
+      priority: 0,
+      weight: 1,
+      costMultiplier: 1,
+      groupTag: null,
+    } as unknown as Provider;
+
+    session.addProviderToChain(provider, {
+      attemptNumber: 1,
+      endpointId: 1,
+      endpointUrl: "https://a.example.com",
+    });
+    session.addProviderToChain(provider, {
+      attemptNumber: 2,
+      endpointId: 2,
+      endpointUrl: "https://b.example.com",
+    });
+
+    const chain = session.getProviderChain();
+    expect(chain).toHaveLength(2);
+    expect(chain[0]).toEqual(
+      expect.objectContaining({
+        attemptNumber: 1,
+        endpointId: 1,
+        endpointUrl: "https://a.example.com",
+      })
+    );
+    expect(chain[1]).toEqual(
+      expect.objectContaining({
+        attemptNumber: 2,
+        endpointId: 2,
+        endpointUrl: "https://b.example.com",
+      })
+    );
+  });
+});

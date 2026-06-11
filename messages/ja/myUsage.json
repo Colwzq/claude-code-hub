@@ -1,0 +1,162 @@
+{
+  "header": {
+    "title": "マイ利用状況",
+    "welcome": "ようこそ、{name}さん",
+    "modelMarket": "モデル広場",
+    "logout": "ログアウト",
+    "keyLabel": "キー",
+    "userLabel": "ユーザー",
+    "providerGroup": "プロバイダーグループ",
+    "noProviderGroup": "デフォルト",
+    "inherited": "（継承）"
+  },
+  "quotaDialog": {
+    "trigger": "クォータを表示",
+    "title": "クォータ詳細",
+    "refresh": "更新",
+    "lastUpdated": "更新: {time}",
+    "loadFailed": "クォータの読み込みに失敗しました",
+    "close": "閉じる"
+  },
+  "quota": {
+    "5h": "5時間クォータ",
+    "daily": "日次クォータ",
+    "weekly": "週次クォータ",
+    "monthly": "月次クォータ",
+    "total": "総クォータ",
+    "concurrent": "同時セッション",
+    "keyLevel": "キー",
+    "userLevel": "ユーザー",
+    "unlimited": "無制限",
+    "empty": "クォータ情報がありません"
+  },
+  "logs": {
+    "title": "利用ログ",
+    "autoRefresh": "{seconds}秒ごとに自動更新",
+    "filters": {
+      "startDate": "開始日",
+      "endDate": "終了日",
+      "model": "モデル",
+      "status": "ステータス",
+      "allModels": "すべてのモデル",
+      "allStatus": "すべてのステータス",
+      "apply": "適用",
+      "reset": "リセット"
+    },
+    "loadFailed": "ログの取得に失敗しました",
+    "table": {
+      "time": "時間",
+      "model": "モデル",
+      "tokens": "トークン (入/出)",
+      "cacheWrite": "キャッシュ書込",
+      "cacheRead": "キャッシュ読取",
+      "cost": "コスト",
+      "status": "ステータス",
+      "endpoint": "エンドポイント"
+    },
+    "pagination": "{from}-{to}/{total} を表示",
+    "prev": "前へ",
+    "next": "次へ",
+    "noLogs": "ログがありません",
+    "unknownModel": "不明なモデル",
+    "billingModel": "課金: {model}",
+    "anthropicEffort": "Effort: {effort}"
+  },
+  "expiration": {
+    "title": "有効期限",
+    "keyExpires": "キーの期限",
+    "userExpires": "ユーザーの期限",
+    "rpmLimit": "RPM制限",
+    "neverExpires": "期限なし",
+    "expired": "期限切れ",
+    "expiresIn": "{time} で期限",
+    "expiringWarning": "まもなく期限"
+  },
+  "providerGroup": {
+    "title": "プロバイダーグループ",
+    "keyGroup": "キーグループ",
+    "userGroup": "ユーザーグループ",
+    "allProviders": "すべてのプロバイダー",
+    "inheritedFromUser": "ユーザーから継承"
+  },
+  "stats": {
+    "title": "キー統計",
+    "autoRefresh": "{seconds}秒ごとに自動更新",
+    "totalRequests": "リクエスト総数",
+    "totalCost": "総コスト",
+    "totalTokens": "トークン総数",
+    "cacheTokens": "キャッシュトークン",
+    "input": "入力",
+    "output": "出力",
+    "write": "書込",
+    "read": "読取",
+    "modelBreakdown": "モデル別",
+    "keyStats": "キー",
+    "userStats": "ユーザー",
+    "noData": "選択期間のデータがありません",
+    "breakdownPrevPage": "前のページ",
+    "breakdownNextPage": "次のページ",
+    "breakdownPageIndicator": "{current} / {total}",
+    "unknownModel": "不明",
+    "modal": {
+      "requests": "リクエスト",
+      "tokens": "トークン",
+      "totalTokens": "トークン合計",
+      "cost": "コスト",
+      "inputTokens": "入力トークン",
+      "outputTokens": "出力トークン",
+      "cacheWrite": "キャッシュ書込",
+      "cacheRead": "キャッシュ読取",
+      "cacheHitRate": "キャッシュヒット率",
+      "cacheTokens": "キャッシュトークン",
+      "performanceHigh": "高",
+      "performanceMedium": "中",
+      "performanceLow": "低"
+    }
+  },
+  "keys": {
+    "title": "マイキー",
+    "description": "このアカウントのキー一覧です。利用可能なキーはクライアントで使うためにコピーできます。",
+    "refresh": "更新",
+    "loading": "キーを読み込み中...",
+    "loadFailed": "キーの読み込みに失敗しました",
+    "empty": "キーがありません",
+    "name": "名前",
+    "key": "キー",
+    "purpose": "用途",
+    "status": "状態",
+    "expiresAt": "有効期限",
+    "createdAt": "作成日時",
+    "actions": "操作",
+    "copy": "コピー",
+    "copying": "コピー中",
+    "copySuccess": "キーをコピーしました",
+    "copyFailed": "コピーに失敗しました",
+    "copyUnavailable": "このキーは現在コピーできません",
+    "neverExpires": "期限なし",
+    "purposeChat": "チャットクライアント",
+    "purposeCode": "コーディングクライアント",
+    "purposeApi": "API キー",
+    "statusEnabled": "利用可",
+    "statusDisabled": "無効",
+    "statusExpired": "期限切れ"
+  },
+  "accessRestrictions": {
+    "title": "アクセス制限",
+    "models": "モデル",
+    "clients": "クライアント",
+    "noRestrictions": "制限なし"
+  },
+  "quotaCollapsible": {
+    "title": "ユーザークォータ使用状況",
+    "daily": "日次",
+    "monthly": "月次",
+    "total": "合計"
+  },
+  "logsCollapsible": {
+    "title": "使用ログ",
+    "lastStatus": "最終: {code} ({time})",
+    "successRate": "{rate}%",
+    "noData": "データなし"
+  }
+}
