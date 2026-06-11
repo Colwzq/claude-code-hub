@@ -12,7 +12,7 @@ This checkout is used beside a production Docker deployment on the host serving
   disrupt the running service.
 - When a build or deploy is required, use the `$cch-remote-build-deploy` skill and build on the remote
   builder: `ssh -i /home/ubuntu/.ssh/claude_code_hub_builder_ed25519 -p 6666 colwzq@colwzq.top`.
-- Remote builder source path: `/home/colwzq/codex-build/claude-code-hub-audit`.
+- Remote builder source path: `/home/colwzq/claude-code-hub`.
 - Production source path: `/www/compose/claude-code-hub/src-audit`.
 - Production compose path: `/www/compose/claude-code-hub`.
 - Production app container: `claude-code-hub-app-qzie`.
