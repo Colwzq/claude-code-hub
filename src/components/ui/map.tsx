@@ -1,6 +1,7 @@
 "use client";
 
 import { Loader2, Locate, Maximize, Minus, Plus, X } from "lucide-react";
+import type * as GeoJSON from "geojson";
 import MapLibreGL, { type MarkerOptions, type PopupOptions } from "maplibre-gl";
 import {
   createContext,
