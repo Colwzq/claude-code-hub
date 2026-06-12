@@ -22,6 +22,7 @@ export async function DashboardHeader({ session, locale }: DashboardHeaderProps)
     { href: "/dashboard", label: t("dashboard") },
     { href: "/dashboard/logs", label: t("usageLogs") },
     { href: "/dashboard/leaderboard", label: t("leaderboard") },
+    { href: "/models", label: t("modelMarket") },
     { href: "/dashboard/availability", label: t("availability"), adminOnly: true },
     { href: "/dashboard/providers", label: t("providers"), adminOnly: true },
     ...(isAdmin

@@ -68,6 +68,17 @@ describe("public status proxy path", () => {
     expect(location).toContain("from=%2Fdashboard");
   });
 
+  it("redirects the model market shortcut to login with a models return path", async () => {
+    const { default: proxyHandler } = await import("@/proxy");
+    const request = new NextRequest("http://localhost/models");
+    request.cookies.set(localeCookieName, "en");
+    const response = proxyHandler(request);
+    const location = response.headers.get("location");
+
+    expect(location).toContain("/en/login");
+    expect(location).toContain("from=%2Fmodels");
+  });
+
   it("falls back safely when NEXT_LOCALE cookie is malformed", async () => {
     const { default: proxyHandler } = await import("@/proxy");
     const request = new NextRequest("http://localhost/dashboard");

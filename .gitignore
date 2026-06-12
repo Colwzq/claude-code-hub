@@ -52,7 +52,11 @@ next-env.d.ts
 # tooling & logs
 .cursor/
 .claude/
-.codex/
+.codex/*
+!.codex/skills/
+.codex/skills/*
+!.codex/skills/*/
+!.codex/skills/*/SKILL.md
 .serena/
 !src/app/dashboard/logs/
 !src/app/settings/logs/

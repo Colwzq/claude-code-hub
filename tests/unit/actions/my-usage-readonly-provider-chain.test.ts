@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getTranslations: vi.fn(async () => (key: string) => key),
   loggerError: vi.fn(),
   loggerInfo: vi.fn(),
+  loggerWarn: vi.fn(),
   resolveSystemTimezone: vi.fn(async () => "UTC"),
 }));
 
@@ -33,6 +34,7 @@ vi.mock("@/lib/logger", () => ({
   logger: {
     error: mocks.loggerError,
     info: mocks.loggerInfo,
+    warn: mocks.loggerWarn,
   },
 }));
 
@@ -41,7 +43,7 @@ describe("getMyUsageLogsBatchFull", () => {
     vi.clearAllMocks();
   });
 
-  it("readonly my-usage 仅对 raw fallback 链路做强脱敏，其它链路保留原有 clientError 可见性", async () => {
+  it("readonly my-usage hides provider identity while keeping billing calculation fields", async () => {
     vi.resetModules();
     mocks.getSession.mockResolvedValueOnce({
       user: { id: 1 },
@@ -52,9 +54,28 @@ describe("getMyUsageLogsBatchFull", () => {
       logs: [
         {
           id: 101,
+          costMultiplier: "1.5",
+          groupCostMultiplier: "2",
           costBreakdown: {
-            input: { usd: "0.1" },
+            input: "0.1",
+            output: "0.2",
+            cache_creation: "0",
+            cache_read: "0",
+            base_total: "0.3",
+            provider_multiplier: 1.5,
+            group_multiplier: 2,
+            total: "0.9",
           },
+          hedgeLosers: [
+            {
+              providerId: 42,
+              providerName: "secret-provider",
+              attemptNumber: 2,
+              costUsd: "0.1",
+              inputTokens: 10,
+              outputTokens: 1,
+            },
+          ],
           specialSettings: [
             {
               type: "guard_intercept",
@@ -64,6 +85,25 @@ describe("getMyUsageLogsBatchFull", () => {
               action: "block_request",
               statusCode: 403,
               reason: '{"matched":"secret"}',
+            },
+            {
+              type: "provider_parameter_override",
+              scope: "provider",
+              providerId: 42,
+              providerName: "secret-provider",
+              providerType: "openai",
+              hit: true,
+              changed: true,
+              changes: [],
+            },
+            {
+              type: "pricing_resolution",
+              scope: "billing",
+              hit: true,
+              modelName: "claude-sonnet",
+              resolvedModelName: "claude-sonnet",
+              resolvedPricingProviderKey: "secret-provider",
+              source: "local_manual",
             },
           ],
           providerChain: [
@@ -152,35 +192,40 @@ describe("getMyUsageLogsBatchFull", () => {
         hasMore: false,
       },
     });
-    const scrubbedProviderErrorDetails =
-      result.ok && result.data.logs[0]?.providerChain?.[0]?.errorDetails;
-    expect(scrubbedProviderErrorDetails && "request" in scrubbedProviderErrorDetails).toBe(false);
-    expect(result.ok && result.data.logs[0]?.providerChain?.[0]?.errorDetails?.response).toEqual({
-      statusCode: 500,
-    });
-    expect(result.ok && result.data.logs[0]?.providerChain?.[0]?.errorDetails?.clientError).toBe(
-      "401 Unauthorized"
+    const log = result.ok ? result.data.logs[0] : null;
+    expect(log?.providerChain).toBeNull();
+    expect(log?._liveChain).toBeNull();
+    expect(log?.costMultiplier).toBe("1.5");
+    expect(log?.groupCostMultiplier).toBe("2");
+    expect(log?.costBreakdown).toEqual(
+      expect.objectContaining({
+        base_total: "0.3",
+        provider_multiplier: 1.5,
+        group_multiplier: 2,
+        total: "0.9",
+      })
     );
-    expect(
-      result.ok && result.data.logs[0]?.providerChain?.[0]?.errorDetails?.provider?.upstreamBody
-    ).toBe('{"error":"unauthorized"}');
-    expect(
-      result.ok && result.data.logs[0]?.providerChain?.[1]?.errorDetails?.clientError
-    ).toBeUndefined();
-    expect(
-      result.ok && result.data.logs[0]?.providerChain?.[1]?.errorDetails?.provider?.upstreamBody
-    ).toBeUndefined();
-    expect(result.ok && result.data.logs[0]?.providerChain?.[2]).toEqual({
-      id: 3,
-      name: "provider-c",
-      errorDetails: null,
-    });
-    expect(result.ok && result.data.logs[0]?._liveChain).toBeNull();
-    expect(result.ok && result.data.logs[0]?.costBreakdown).toBeNull();
-    expect(result.ok && result.data.logs[0]?.specialSettings).toEqual([
+    expect(log?.hedgeLosers).toEqual([
+      expect.objectContaining({
+        providerId: 0,
+        providerName: "",
+        attemptNumber: 2,
+        costUsd: "0.1",
+      }),
+    ]);
+    expect(log?.specialSettings).toEqual([
       expect.objectContaining({
         type: "guard_intercept",
         reason: null,
+      }),
+      expect.objectContaining({
+        type: "provider_parameter_override",
+        providerId: null,
+        providerName: null,
+      }),
+      expect.objectContaining({
+        type: "pricing_resolution",
+        resolvedPricingProviderKey: "",
       }),
     ]);
   });

@@ -24,6 +24,7 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/VERSION ./VERSION
+COPY --from=builder /app/scripts/audit-worker.mjs ./scripts/audit-worker.mjs
 
 # Node 诊断报告输出目录（issue #1147）
 # 容器外通过 docker-compose volume 挂载到 ./data/reports 持久化

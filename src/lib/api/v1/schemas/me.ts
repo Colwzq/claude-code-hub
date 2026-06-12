@@ -45,6 +45,10 @@ export const StringListResponseSchema = z.object({
   items: z.array(z.string()).describe("String values."),
 });
 
+export const MeKeysResponseSchema = z.object({
+  items: z.array(z.record(z.string(), z.unknown())).describe("Current caller keys."),
+});
+
 export type MeUsageLogsQueryInput = z.infer<typeof MeUsageLogsQuerySchema>;
 export type MeUsageLogsActionQueryInput = Omit<
   MeUsageLogsQueryInput,

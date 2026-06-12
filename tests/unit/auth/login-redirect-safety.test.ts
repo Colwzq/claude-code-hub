@@ -52,14 +52,28 @@ describe("sanitizeRedirectPath", () => {
 });
 
 describe("resolveLoginRedirectTarget", () => {
-  it("always prioritizes server redirectTo over from", () => {
-    expect(resolveLoginRedirectTarget("/my-usage", "/settings")).toBe("/my-usage");
-    expect(resolveLoginRedirectTarget("/my-usage", "https://evil.example/phish")).toBe("/my-usage");
+  it("prioritizes safe from over the server fallback", () => {
+    expect(resolveLoginRedirectTarget("/dashboard", "/models", "dashboard_user")).toBe("/models");
+    expect(resolveLoginRedirectTarget("/my-usage", "/models", "readonly_user")).toBe("/models");
   });
 
   it("uses sanitized from when server redirectTo is empty", () => {
     expect(resolveLoginRedirectTarget(undefined, "/settings")).toBe("/settings");
     expect(resolveLoginRedirectTarget("", "https://evil.example/phish")).toBe("/dashboard");
+  });
+
+  it("falls back to server redirectTo when from is unsafe", () => {
+    expect(resolveLoginRedirectTarget("/my-usage", "https://evil.example/phish")).toBe("/my-usage");
+  });
+
+  it("prevents readonly users from being redirected to dashboard-only pages", () => {
+    expect(resolveLoginRedirectTarget("/dashboard", "/dashboard/users", "readonly_user")).toBe(
+      "/my-usage"
+    );
+  });
+
+  it("allows readonly users to return to model market", () => {
+    expect(resolveLoginRedirectTarget("/my-usage", "/models", "readonly_user")).toBe("/models");
   });
 });
 

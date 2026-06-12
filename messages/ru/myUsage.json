@@ -2,6 +2,7 @@
   "header": {
     "title": "Мои расходы",
     "welcome": "Добро пожаловать, {name}",
+    "modelMarket": "Витрина моделей",
     "logout": "Выйти",
     "keyLabel": "Ключ",
     "userLabel": "Пользователь",
@@ -112,6 +113,33 @@
       "performanceMedium": "Средний",
       "performanceLow": "Низкий"
     }
+  },
+  "keys": {
+    "title": "Мои ключи",
+    "description": "Ключи вашей учетной записи. Доступные ключи можно скопировать для клиента.",
+    "refresh": "Обновить",
+    "loading": "Загрузка ключей...",
+    "loadFailed": "Не удалось загрузить ключи",
+    "empty": "Нет ключей",
+    "name": "Название",
+    "key": "Ключ",
+    "purpose": "Назначение",
+    "status": "Статус",
+    "expiresAt": "Истекает",
+    "createdAt": "Создан",
+    "actions": "Действия",
+    "copy": "Копировать",
+    "copying": "Копирование",
+    "copySuccess": "Ключ скопирован",
+    "copyFailed": "Не удалось скопировать",
+    "copyUnavailable": "Этот ключ сейчас нельзя скопировать",
+    "neverExpires": "Бессрочно",
+    "purposeChat": "Чат-клиент",
+    "purposeCode": "Клиент для кода",
+    "purposeApi": "API-ключ",
+    "statusEnabled": "Доступен",
+    "statusDisabled": "Отключен",
+    "statusExpired": "Истек"
   },
   "accessRestrictions": {
     "title": "Ограничения доступа",

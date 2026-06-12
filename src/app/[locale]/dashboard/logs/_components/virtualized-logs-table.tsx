@@ -434,6 +434,30 @@ export function VirtualizedLogsTable({
     const isActiveMultiplier = (value: number) =>
       Number.isFinite(value) && value > 0 && value !== 1;
 
+    const createMultiplierRowsFromRawFields = () =>
+      [
+        (() => {
+          if (log.costMultiplier === "" || log.costMultiplier == null) return null;
+          const multiplier = Number(log.costMultiplier);
+          if (!isActiveMultiplier(multiplier)) return null;
+          return {
+            key: "provider",
+            label: t("logs.billingDetails.providerMultiplier"),
+            value: `${multiplier.toFixed(2)}x`,
+          };
+        })(),
+        (() => {
+          if (log.groupCostMultiplier === "" || log.groupCostMultiplier == null) return null;
+          const multiplier = Number(log.groupCostMultiplier);
+          if (!isActiveMultiplier(multiplier)) return null;
+          return {
+            key: "group",
+            label: t("logs.billingDetails.groupMultiplier"),
+            value: `${multiplier.toFixed(2)}x`,
+          };
+        })(),
+      ].filter((row): row is { key: string; label: string; value: string } => row !== null);
+
     const hedgeTable = buildHedgeBillingTable(log.costUsd, log.hedgeLosers, {
       inputTokens: log.inputTokens,
       outputTokens: log.outputTokens,
@@ -463,7 +487,7 @@ export function VirtualizedLogsTable({
                 className="flex items-start justify-between gap-3"
               >
                 <span className="text-[11px] text-rose-300/80 truncate">
-                  {loser.providerName ?? t("logs.billingDetails.hedgeLoserShort")}
+                  {loser.providerName || t("logs.billingDetails.hedgeLoserShort")}
                 </span>
                 <span className={cn(amountClassName, "text-rose-300/80")}>
                   {formatCurrency(loser.costUsd, currencyCode, 6)}
@@ -494,6 +518,7 @@ export function VirtualizedLogsTable({
     ) : null;
 
     if (!log.costBreakdown) {
+      const activeMultiplierRows = createMultiplierRowsFromRawFields();
       return (
         <TooltipContent align="end" className="max-w-[320px] p-3">
           <div className="space-y-3">
@@ -501,6 +526,18 @@ export function VirtualizedLogsTable({
               <span className="text-xs font-semibold text-background">{title}</span>
               {headerChip}
             </div>
+            {activeMultiplierRows.length > 0 ? (
+              <div className="space-y-1.5">
+                {activeMultiplierRows.map((row) => (
+                  <div key={row.key}>
+                    {renderSummaryRow({
+                      label: row.label,
+                      primary: row.value,
+                    })}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <div className="border-t border-background/20 pt-2">
               {renderSummaryRow({
                 label: totalCostLabel,

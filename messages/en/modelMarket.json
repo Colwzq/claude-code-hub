@@ -1,0 +1,43 @@
+{
+  "pageTitle": "Model Market",
+  "pageDescription": "View available models, final billing prices, and 30-day average cost rankings.",
+  "title": "Model Market",
+  "description": "Models are shown by model ID. Prices are final default-group prices in USD per 1M tokens. When routes differ, the highest final price is shown.",
+  "updatedAt": "Data updated: {time}",
+  "empty": "No matching models",
+  "tableTitle": "Available Models",
+  "tableDescription": "Models without valid input and output token prices are hidden. Average cost uses the last 30 days of historical token mix.",
+  "summary": {
+    "models": "Available models",
+    "requests30d": "30d requests",
+    "unit": "Price unit",
+    "rankedModels": "Ranked models",
+    "highestAverageCost": "Highest average cost"
+  },
+  "filters": {
+    "search": "Search model ID",
+    "allCompanies": "All companies"
+  },
+  "tabs": {
+    "market": "Model Market",
+    "ranking": "Price Ranking"
+  },
+  "columns": {
+    "rank": "Rank",
+    "model": "Model ID",
+    "company": "Company",
+    "averageCost": "Average / 1M",
+    "input": "Input / 1M",
+    "output": "Output / 1M",
+    "cacheWrite": "Cache write / 1M",
+    "cacheRead": "Cache read / 1M",
+    "cacheHitRate": "Cache hit",
+    "context": "Context",
+    "requests30d": "30d requests"
+  },
+  "ranking": {
+    "noHistory": "- means there is no historical token mix in the last 30 days, so the model is placed last.",
+    "desc": "High to low",
+    "asc": "Low to high"
+  }
+}

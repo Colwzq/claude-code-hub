@@ -1,4 +1,5 @@
 import type {
+  MyKeyListItem,
   MyStatsSummary,
   MyTodayStats,
   MyUsageLogsBatchResult,
@@ -16,6 +17,7 @@ import {
 } from "./_compat";
 
 export type {
+  MyKeyListItem,
   MyStatsSummary,
   MyTodayStats,
   MyUsageLogEntry,
@@ -34,6 +36,10 @@ export function getMyQuota() {
 
 export function getMyTodayStats() {
   return toActionResult(apiGet<MyTodayStats>("/api/v1/me/today"));
+}
+
+export function getMyKeys() {
+  return toActionResult(apiGet<{ items?: MyKeyListItem[] }>("/api/v1/me/keys").then(unwrapItems));
 }
 
 export function getMyUsageLogs(params?: object) {

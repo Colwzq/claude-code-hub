@@ -4,6 +4,7 @@ import {
 } from "@/app/v1/_lib/proxy/anthropic-actual-response-model";
 import { ResponseFixer } from "@/app/v1/_lib/proxy/response-fixer";
 import { AsyncTaskManager } from "@/lib/async-task-manager";
+import { captureAuditArchiveTurn } from "@/lib/audit-archive/capture";
 import { getEnvConfig } from "@/lib/config/env.schema";
 import { getCachedSystemSettings } from "@/lib/config/system-settings-cache";
 import { emitProxyLangfuseTrace } from "@/lib/langfuse/emit-proxy-trace";
@@ -1100,6 +1101,21 @@ export class ProxyResponseHandler {
               false // Gemini 非流式透传
             );
 
+            captureAuditArchiveTurn({
+              session,
+              responseText,
+              usageMetrics: finalizedUsage,
+              statusCode,
+              durationMs: duration,
+              isStreaming: false,
+              errorMessage: errorMessageForFinalize,
+              actualResponseModel: extractActualResponseModelForProvider(
+                provider.providerType,
+                false,
+                responseText
+              ),
+            });
+
             emitProxyLangfuseTrace(session, {
               responseHeaders: response.headers,
               responseText,
@@ -1517,6 +1533,23 @@ export class ProxyResponseHandler {
           providerId: provider.id,
           providerName: provider.name,
           statusCode,
+        });
+
+        const actualResponseModel = extractActualResponseModelForProvider(
+          provider.providerType,
+          false,
+          responseText
+        );
+
+        captureAuditArchiveTurn({
+          session,
+          responseText,
+          usageMetrics,
+          costUsd: rawCostUsdStr,
+          statusCode,
+          durationMs: Date.now() - session.startTime,
+          isStreaming: false,
+          actualResponseModel,
         });
 
         emitProxyLangfuseTrace(session, {
@@ -2005,6 +2038,22 @@ export class ProxyResponseHandler {
               finalized.providerIdForPersistence ?? undefined,
               true // Gemini 流式透传(NDJSON 无 data:/event: 前缀,必须显式告知)
             );
+
+            captureAuditArchiveTurn({
+              session,
+              responseText: allContent,
+              usageMetrics: finalizedUsage,
+              statusCode: finalized.effectiveStatusCode,
+              durationMs: duration,
+              isStreaming: true,
+              errorMessage: finalized.errorMessage ?? undefined,
+              actualResponseModel: extractActualResponseModelForProvider(
+                provider.providerType,
+                true,
+                allContent
+              ),
+              clientAborted,
+            });
 
             emitProxyLangfuseTrace(session, {
               responseHeaders: response.headers,
@@ -2635,6 +2684,20 @@ export class ProxyResponseHandler {
           context1mApplied: session.getContext1mApplied(),
           swapCacheTtlApplied: provider.swapCacheTtlBilling ?? false,
           specialSettings: session.getSpecialSettings() ?? undefined,
+        });
+
+        captureAuditArchiveTurn({
+          session,
+          responseText: allContent,
+          usageMetrics: usageForCost,
+          costUsd: rawCostUsdStr,
+          statusCode: effectiveStatusCode,
+          durationMs: duration,
+          isStreaming: true,
+          sseEventCount: chunks.length,
+          errorMessage: streamErrorMessage ?? undefined,
+          actualResponseModel: finalActualResponseModel,
+          clientAborted,
         });
 
         emitProxyLangfuseTrace(session, {
@@ -4397,6 +4460,17 @@ async function persistRequestFailure(options: {
   }
 
   // Emit Langfuse trace for error/abort paths
+  captureAuditArchiveTurn({
+    session,
+    responseText: "",
+    usageMetrics: null,
+    statusCode,
+    durationMs: duration,
+    isStreaming: phase === "stream",
+    errorMessage,
+    clientAborted: session.clientAbortSignal?.aborted ?? false,
+  });
+
   emitProxyLangfuseTrace(session, {
     responseHeaders: new Headers(),
     responseText: "",

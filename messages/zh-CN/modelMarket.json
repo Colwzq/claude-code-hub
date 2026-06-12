@@ -1,0 +1,43 @@
+{
+  "pageTitle": "模型广场",
+  "pageDescription": "查看当前可请求模型、最终计费价格和近 30 天平均成本排名。",
+  "title": "模型广场",
+  "description": "按模型 ID 展示当前可请求模型，价格为 default 组最终价，单位为美元 / 1M tokens。多线路价格不一致时按最高价展示。",
+  "updatedAt": "数据更新：{time}",
+  "empty": "暂无符合条件的模型",
+  "tableTitle": "可用模型",
+  "tableDescription": "缺少有效输入或输出 token 单价的模型已隐藏；平均成本按近 30 天历史 token 结构计算。",
+  "summary": {
+    "models": "可用模型",
+    "requests30d": "近 30 天请求",
+    "unit": "价格单位",
+    "rankedModels": "可排名模型",
+    "highestAverageCost": "最高平均成本"
+  },
+  "filters": {
+    "search": "搜索模型 ID",
+    "allCompanies": "全部厂商"
+  },
+  "tabs": {
+    "market": "模型广场",
+    "ranking": "价格排名"
+  },
+  "columns": {
+    "rank": "排名",
+    "model": "模型 ID",
+    "company": "厂商",
+    "averageCost": "平均成本 / 1M",
+    "input": "输入 / 1M",
+    "output": "输出 / 1M",
+    "cacheWrite": "缓存写入 / 1M",
+    "cacheRead": "缓存读取 / 1M",
+    "cacheHitRate": "缓存命中",
+    "context": "上下文",
+    "requests30d": "近 30 天请求"
+  },
+  "ranking": {
+    "noHistory": "- 表示近 30 天没有可用于估算的历史 token，排在最后。",
+    "desc": "从贵到便宜",
+    "asc": "从便宜到贵"
+  }
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { LogOut } from "lucide-react";
+import { Boxes, LogOut } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { useRouter } from "@/i18n/routing";
@@ -46,6 +46,15 @@ export function MyUsageHeader({ onLogout, keyName, userName }: MyUsageHeaderProp
         </div>
       </div>
       <div className="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => router.push("/models")}
+          className="gap-2"
+        >
+          <Boxes className="h-4 w-4" />
+          {t("modelMarket")}
+        </Button>
         <Button variant="outline" size="sm" onClick={handleLogout} className="gap-2">
           <LogOut className="h-4 w-4" />
           {t("logout")}

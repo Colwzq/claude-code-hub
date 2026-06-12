@@ -2,6 +2,7 @@
   "header": {
     "title": "マイ利用状況",
     "welcome": "ようこそ、{name}さん",
+    "modelMarket": "モデル広場",
     "logout": "ログアウト",
     "keyLabel": "キー",
     "userLabel": "ユーザー",
@@ -112,6 +113,33 @@
       "performanceMedium": "中",
       "performanceLow": "低"
     }
+  },
+  "keys": {
+    "title": "マイキー",
+    "description": "このアカウントのキー一覧です。利用可能なキーはクライアントで使うためにコピーできます。",
+    "refresh": "更新",
+    "loading": "キーを読み込み中...",
+    "loadFailed": "キーの読み込みに失敗しました",
+    "empty": "キーがありません",
+    "name": "名前",
+    "key": "キー",
+    "purpose": "用途",
+    "status": "状態",
+    "expiresAt": "有効期限",
+    "createdAt": "作成日時",
+    "actions": "操作",
+    "copy": "コピー",
+    "copying": "コピー中",
+    "copySuccess": "キーをコピーしました",
+    "copyFailed": "コピーに失敗しました",
+    "copyUnavailable": "このキーは現在コピーできません",
+    "neverExpires": "期限なし",
+    "purposeChat": "チャットクライアント",
+    "purposeCode": "コーディングクライアント",
+    "purposeApi": "API キー",
+    "statusEnabled": "利用可",
+    "statusDisabled": "無効",
+    "statusExpired": "期限切れ"
   },
   "accessRestrictions": {
     "title": "アクセス制限",

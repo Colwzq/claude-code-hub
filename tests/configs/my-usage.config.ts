@@ -5,8 +5,10 @@ export default createCoverageConfig({
   environment: "node",
   testFiles: [
     "tests/api/my-usage-readonly.test.ts",
+    "tests/unit/actions/my-usage-readonly-provider-chain.test.ts",
     "tests/api/api-actions-integrity.test.ts",
     "tests/integration/auth.test.ts",
+    "tests/integration/auth-opaque.test.ts",
     "tests/api/action-adapter-openapi.unit.test.ts",
   ],
   sourceFiles: [

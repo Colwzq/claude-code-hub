@@ -4,11 +4,26 @@ import { db } from "@/drizzle/db";
 import { keys, users } from "@/drizzle/schema";
 import {
   clearAuthCookie,
+  createSignedAdminAuthToken,
+  detectSessionTokenKind,
   getAuthCookie,
+  getAuthSessionTtlSeconds,
   getLoginRedirectTarget,
+  getScopedAuthContext,
+  getScopedAuthSession,
   getSession,
+  getSessionTokenMigrationFlags,
+  getSessionWithDualRead,
+  isOpaqueSessionContract,
+  isSessionTokenAccepted,
+  isSessionTokenKindAccepted,
+  isSignedAdminAuthToken,
+  runWithAuthSession,
   setAuthCookie,
+  validateAuthToken,
   validateKey,
+  validateSession,
+  withNoStoreHeaders,
 } from "@/lib/auth";
 
 /**
@@ -176,6 +191,37 @@ describe("auth.ts：validateKey / getSession（安全边界）", () => {
     expect(session).toBeNull();
   });
 
+  test("用户禁用或过期：validateKey 应返回 null", async () => {
+    const unique = `auth-disabled-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const disabledUser = await createTestUser(`Test ${unique}-disabled`);
+    const expiredUser = await createTestUser(`Test ${unique}-expired`);
+    createdUserIds.push(disabledUser.id, expiredUser.id);
+    const disabledKey = await createTestKey({
+      userId: disabledUser.id,
+      key: `test-disabled-key-${unique}`,
+      canLoginWebUi: true,
+    });
+    const expiredKey = await createTestKey({
+      userId: expiredUser.id,
+      key: `test-expired-key-${unique}`,
+      canLoginWebUi: true,
+    });
+    createdKeyIds.push(disabledKey.id, expiredKey.id);
+
+    const now = new Date();
+    await db
+      .update(users)
+      .set({ isEnabled: false, updatedAt: now })
+      .where(inArray(users.id, [disabledUser.id]));
+    await db
+      .update(users)
+      .set({ expiresAt: new Date(Date.now() - 1_000), updatedAt: now })
+      .where(inArray(users.id, [expiredUser.id]));
+
+    await expect(validateKey(disabledKey.key, { allowReadOnlyAccess: true })).resolves.toBeNull();
+    await expect(validateKey(expiredKey.key, { allowReadOnlyAccess: true })).resolves.toBeNull();
+  });
+
   test("getSession：无 Cookie 时返回 null；有 Cookie 时返回 session", async () => {
     const noCookie = await getSession({ allowReadOnlyAccess: true });
     expect(noCookie).toBeNull();
@@ -250,5 +296,126 @@ describe("auth.ts：Cookie 工具函数与跳转目标", () => {
       key: { canLoginWebUi: false } as any,
     });
     expect(readonlyTarget).toBe("/my-usage");
+  });
+
+  test("session token helper：迁移模式、类型判定与契约校验", () => {
+    expect(getAuthSessionTtlSeconds()).toBeGreaterThanOrEqual(60);
+
+    expect(getSessionTokenMigrationFlags("legacy")).toEqual({
+      dualReadWindowEnabled: false,
+      hardCutoverEnabled: false,
+      emergencyRollbackEnabled: true,
+    });
+    expect(getSessionTokenMigrationFlags("dual")).toMatchObject({ dualReadWindowEnabled: true });
+    expect(getSessionTokenMigrationFlags("opaque")).toMatchObject({ hardCutoverEnabled: true });
+
+    expect(isSessionTokenKindAccepted("dual", "legacy")).toBe(true);
+    expect(isSessionTokenKindAccepted("legacy", "opaque")).toBe(false);
+    expect(isSessionTokenKindAccepted("opaque", "opaque")).toBe(true);
+
+    expect(detectSessionTokenKind(" sid_abc ")).toBe("opaque");
+    expect(detectSessionTokenKind("sk-legacy")).toBe("legacy");
+    expect(isSessionTokenAccepted("sid_abc", "legacy")).toBe(false);
+    expect(isSessionTokenAccepted("sid_abc", "opaque")).toBe(true);
+
+    const validContract = {
+      sessionId: "sid_contract",
+      keyFingerprint: "sha256:abc",
+      credentialType: "user-api-key",
+      createdAt: 1,
+      expiresAt: 2,
+      userId: 1,
+      userRole: "user",
+    };
+    expect(isOpaqueSessionContract(validContract)).toBe(true);
+    expect(isOpaqueSessionContract(null)).toBe(false);
+    expect(isOpaqueSessionContract({ ...validContract, sessionId: "" })).toBe(false);
+    expect(isOpaqueSessionContract({ ...validContract, expiresAt: 1 })).toBe(false);
+    expect(isOpaqueSessionContract({ ...validContract, credentialType: "legacy-key" })).toBe(false);
+  });
+
+  test("withNoStoreHeaders：认证响应应禁止缓存", () => {
+    const response = { headers: new Headers() };
+
+    const returned = withNoStoreHeaders(response as any);
+
+    expect(returned).toBe(response);
+    expect(response.headers.get("Cache-Control")).toBe("no-store, no-cache, must-revalidate");
+    expect(response.headers.get("Pragma")).toBe("no-cache");
+  });
+
+  test("scoped auth session：只允许降权，不允许只读 key 被提权", async () => {
+    const previousStorage = globalThis.__cchAuthSessionStorage;
+    const readonlySession = {
+      user: { id: 1, role: "user", name: "Scoped User" },
+      key: { id: 2, key: "scoped-key", canLoginWebUi: false },
+    } as any;
+    let currentStore: Parameters<NonNullable<typeof previousStorage>["run"]>[0] | undefined;
+
+    globalThis.__cchAuthSessionStorage = undefined;
+    expect(runWithAuthSession(readonlySession, () => "no-storage")).toBe("no-storage");
+
+    globalThis.__cchAuthSessionStorage = {
+      run(store, callback) {
+        const previous = currentStore;
+        currentStore = store;
+        try {
+          return callback();
+        } finally {
+          currentStore = previous;
+        }
+      },
+      getStore() {
+        return currentStore;
+      },
+    };
+
+    try {
+      expect(getScopedAuthSession()).toBeNull();
+
+      const context = runWithAuthSession(readonlySession, () => getScopedAuthContext(), {
+        allowReadOnlyAccess: true,
+      });
+      expect(context?.session).toBe(readonlySession);
+      expect(context?.allowReadOnlyAccess).toBe(true);
+
+      const allowed = await runWithAuthSession(
+        readonlySession,
+        () => getSession({ allowReadOnlyAccess: true }),
+        { allowReadOnlyAccess: true }
+      );
+      expect(allowed).toBe(readonlySession);
+
+      const deniedByCaller = await runWithAuthSession(
+        readonlySession,
+        () => getSession({ allowReadOnlyAccess: false }),
+        { allowReadOnlyAccess: true }
+      );
+      expect(deniedByCaller).toBeNull();
+
+      const deniedByScope = await runWithAuthSession(
+        readonlySession,
+        () => getSession({ allowReadOnlyAccess: true }),
+        { allowReadOnlyAccess: false }
+      );
+      expect(deniedByScope).toBeNull();
+    } finally {
+      globalThis.__cchAuthSessionStorage = previousStorage;
+    }
+  });
+
+  test("legacy 模式：签名 admin session token 不应作为普通 auth token 接受", async () => {
+    const token = await createSignedAdminAuthToken();
+
+    await expect(isSignedAdminAuthToken(token)).resolves.toBe(true);
+    await expect(validateAuthToken(token)).resolves.toBeNull();
+  });
+
+  test("validateSession / getSessionWithDualRead：复用 getSession 读取逻辑", async () => {
+    currentCookieValue = undefined;
+    currentAuthorizationValue = undefined;
+
+    await expect(getSessionWithDualRead()).resolves.toBeNull();
+    await expect(validateSession()).resolves.toBeNull();
   });
 });

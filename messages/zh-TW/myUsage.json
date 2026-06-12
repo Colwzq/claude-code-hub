@@ -2,6 +2,7 @@
   "header": {
     "title": "我的使用量",
     "welcome": "歡迎，{name}",
+    "modelMarket": "模型廣場",
     "logout": "登出",
     "keyLabel": "金鑰",
     "userLabel": "使用者",
@@ -112,6 +113,33 @@
       "performanceMedium": "中",
       "performanceLow": "低"
     }
+  },
+  "keys": {
+    "title": "我的金鑰",
+    "description": "目前使用者下的金鑰列表。可用金鑰可以直接複製使用。",
+    "refresh": "重新整理",
+    "loading": "正在載入金鑰...",
+    "loadFailed": "金鑰載入失敗",
+    "empty": "暫無金鑰",
+    "name": "名稱",
+    "key": "金鑰",
+    "purpose": "用途",
+    "status": "狀態",
+    "expiresAt": "到期時間",
+    "createdAt": "建立時間",
+    "actions": "操作",
+    "copy": "複製",
+    "copying": "複製中",
+    "copySuccess": "金鑰已複製",
+    "copyFailed": "複製失敗",
+    "copyUnavailable": "此金鑰目前不可複製",
+    "neverExpires": "永不過期",
+    "purposeChat": "聊天客戶端",
+    "purposeCode": "編程客戶端",
+    "purposeApi": "API 金鑰",
+    "statusEnabled": "可用",
+    "statusDisabled": "已停用",
+    "statusExpired": "已過期"
   },
   "accessRestrictions": {
     "title": "存取限制",

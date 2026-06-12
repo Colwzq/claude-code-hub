@@ -112,6 +112,9 @@ async function createTestKey(params: {
   key: string;
   name: string;
   canLoginWebUi: boolean;
+  isEnabled?: boolean;
+  expiresAt?: Date | null;
+  providerGroup?: string | null;
 }): Promise<TestKey> {
   await ensureLegacyApiRuntime();
   const { createKey } = await import("@/repository/key");
@@ -119,12 +122,13 @@ async function createTestKey(params: {
     user_id: params.userId,
     name: params.name,
     key: params.key,
-    is_enabled: true,
+    is_enabled: params.isEnabled ?? true,
+    expires_at: params.expiresAt ?? null,
     can_login_web_ui: params.canLoginWebUi,
     daily_reset_mode: "rolling",
     daily_reset_time: "00:00",
     limit_5h_reset_mode: "rolling",
-    provider_group: "default",
+    provider_group: params.providerGroup ?? "default",
   });
 
   return { id: row.id, userId: row.userId, key: row.key, name: row.name };
@@ -389,6 +393,73 @@ describe.skipIf(!process.env.DSN)("my-usage API：只读 Key 自助查询", () =
     expect(usersData[0].id).toBe(user.id);
   });
 
+  test("getMyKeys：只返回当前用户 key，并按 enabled/disabled/expired 暴露复制状态", async () => {
+    const unique = `my-keys-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const user = await createTestUser(`Test ${unique}`);
+    createdUserIds.push(user.id);
+
+    const enabledKey = await createTestKey({
+      userId: user.id,
+      key: `test-enabled-key-${unique}`,
+      name: `enabled-${unique}`,
+      canLoginWebUi: false,
+      providerGroup: "default",
+    });
+    const disabledKey = await createTestKey({
+      userId: user.id,
+      key: `test-disabled-key-${unique}`,
+      name: `disabled-${unique}`,
+      canLoginWebUi: false,
+      isEnabled: false,
+    });
+    const expiredKey = await createTestKey({
+      userId: user.id,
+      key: `test-expired-key-${unique}`,
+      name: `expired-${unique}`,
+      canLoginWebUi: false,
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    createdKeyIds.push(enabledKey.id, disabledKey.id, expiredKey.id);
+
+    const otherUser = await createTestUser(`Other ${unique}`);
+    createdUserIds.push(otherUser.id);
+    const otherKey = await createTestKey({
+      userId: otherUser.id,
+      key: `test-other-key-${unique}`,
+      name: `other-${unique}`,
+      canLoginWebUi: false,
+    });
+    createdKeyIds.push(otherKey.id);
+
+    currentAuthToken = enabledKey.key;
+
+    const { getMyKeys } = await import("@/actions/my-usage");
+    const result = await getMyKeys();
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const byName = new Map(result.data.map((item) => [item.name, item]));
+    expect(byName.has(otherKey.name)).toBe(false);
+    expect(byName.get(enabledKey.name)).toMatchObject({
+      status: "enabled",
+      canCopy: true,
+      fullKey: enabledKey.key,
+      providerGroup: "default",
+    });
+    expect(byName.get(enabledKey.name)?.maskedKey).not.toBe(enabledKey.key);
+    expect(byName.get(disabledKey.name)).toMatchObject({
+      status: "disabled",
+      canCopy: false,
+      fullKey: null,
+    });
+    expect(byName.get(expiredKey.name)).toMatchObject({
+      status: "expired",
+      canCopy: false,
+      fullKey: null,
+    });
+  });
+
   test("只读 Key：只能查询当前 key 日志里出现过的 IP 详情", async () => {
     const unique = `my-usage-ip-geo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const userA = await createTestUser(`Test ${unique}-A`);
@@ -604,6 +675,34 @@ describe.skipIf(!process.env.DSN)("my-usage API：只读 Key 自助查询", () =
     expect(logIds).toContain(a2);
     // warmup 行是否展示不做强约束（日志口径可见），但绝不能泄漏 B
     expect(logIds).not.toContain(b1);
+
+    // 兼容旧版 page/pageSize 分页接口：仍应按当前 key 限定，且暴露重定向展示字段
+    const legacyLogs = await callActionsRoute({
+      method: "POST",
+      pathname: "/api/actions/my-usage/getMyUsageLogs",
+      authToken: keyA.key,
+      body: {
+        page: 1,
+        pageSize: 10,
+        startTime: t0.getTime() - 1_000,
+        endTime: t0.getTime() + 1_000,
+      },
+    });
+    expect(legacyLogs.response.status).toBe(200);
+    expect(legacyLogs.json).toMatchObject({ ok: true });
+    const legacyData = (legacyLogs.json as any).data as {
+      logs: Array<{ id: number; modelRedirect: string | null; billingModel: string | null }>;
+      total: number;
+      page: number;
+      pageSize: number;
+    };
+    expect(legacyData.page).toBe(1);
+    expect(legacyData.pageSize).toBe(10);
+    expect(legacyData.total).toBeGreaterThanOrEqual(2);
+    const legacyById = new Map(legacyData.logs.map((row) => [row.id, row]));
+    expect(legacyById.get(a1)?.modelRedirect).toBe("gpt-4.1-original → gpt-4.1");
+    expect(legacyById.get(a2)?.modelRedirect).toBe("gpt-4.1-mini-original → gpt-4.1-mini");
+    expect(legacyById.has(b1)).toBe(false);
 
     // 筛选项接口：模型与端点列表应可用
     const models = await callActionsRoute({

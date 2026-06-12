@@ -6,6 +6,7 @@ import {
   GenericMeResponseSchema,
   MeIpGeoParamSchema,
   MeIpGeoQuerySchema,
+  MeKeysResponseSchema,
   MeStatsSummaryQuerySchema,
   MeUsageLogsQuerySchema,
   StringListResponseSchema,
@@ -16,6 +17,7 @@ import {
   getMeQuota,
   getMeStatsSummary,
   getMeToday,
+  listMeKeys,
   listMeUsageEndpoints,
   listMeUsageLogs,
   listMeUsageLogsFull,
@@ -114,6 +116,27 @@ meRouter.openapi(
     },
   }),
   getMeToday as never
+);
+
+meRouter.openapi(
+  createRoute({
+    method: "get",
+    path: "/me/keys",
+    middleware: requireAuth("read"),
+    tags: ["Me"],
+    summary: "List current caller keys",
+    description: "Returns keys owned by the current user for the self-service usage page.",
+    "x-required-access": "read",
+    security,
+    responses: {
+      200: {
+        description: "Current caller keys.",
+        content: { "application/json": { schema: MeKeysResponseSchema } },
+      },
+      ...problemResponses,
+    },
+  }),
+  listMeKeys as never
 );
 
 meRouter.openapi(

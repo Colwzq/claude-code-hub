@@ -2,6 +2,7 @@
   "header": {
     "title": "我的用量",
     "welcome": "欢迎，{name}",
+    "modelMarket": "模型广场",
     "logout": "退出登录",
     "keyLabel": "密钥",
     "userLabel": "用户",
@@ -112,6 +113,33 @@
       "performanceMedium": "中",
       "performanceLow": "低"
     }
+  },
+  "keys": {
+    "title": "我的密钥",
+    "description": "当前用户下的密钥列表。可用密钥可以直接复制使用。",
+    "refresh": "刷新",
+    "loading": "正在加载密钥...",
+    "loadFailed": "密钥加载失败",
+    "empty": "暂无密钥",
+    "name": "名称",
+    "key": "密钥",
+    "purpose": "用途",
+    "status": "状态",
+    "expiresAt": "过期时间",
+    "createdAt": "创建时间",
+    "actions": "操作",
+    "copy": "复制",
+    "copying": "复制中",
+    "copySuccess": "密钥已复制",
+    "copyFailed": "复制失败",
+    "copyUnavailable": "该密钥当前不可复制",
+    "neverExpires": "永不过期",
+    "purposeChat": "聊天客户端",
+    "purposeCode": "编程客户端",
+    "purposeApi": "API 密钥",
+    "statusEnabled": "可用",
+    "statusDisabled": "已禁用",
+    "statusExpired": "已过期"
   },
   "accessRestrictions": {
     "title": "访问限制",

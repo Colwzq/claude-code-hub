@@ -626,6 +626,23 @@ describe("virtualized-logs-table multiplier badge", () => {
     expect(tooltip.textContent).not.toContain("logs.billingDetails.pricingProvider");
   });
 
+  test("shows available multipliers when cost breakdown is missing", () => {
+    const tooltip = renderCostTooltipWithLog({
+      costUsd: "0.017319",
+      costMultiplier: "0.1600",
+      groupCostMultiplier: "1.2500",
+      costBreakdown: null,
+    });
+
+    expect(tooltip.textContent).toContain("logs.billingDetails.providerMultiplier");
+    expect(tooltip.textContent).toContain("0.16x");
+    expect(tooltip.textContent).toContain("logs.billingDetails.groupMultiplier");
+    expect(tooltip.textContent).toContain("1.25x");
+    expect(tooltip.textContent).toContain("logs.billingDetails.totalCost");
+    expect(tooltip.textContent).toContain("$0.017319");
+    expect(tooltip.textContent).not.toContain("logs.billingDetails.baseTotal");
+  });
+
   test("renders the hedge billing split with cache tokens in the cost tooltip", () => {
     const tooltip = renderCostTooltipWithLog({
       costUsd: "0.030000",

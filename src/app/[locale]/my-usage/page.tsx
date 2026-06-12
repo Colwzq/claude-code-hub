@@ -6,6 +6,7 @@ import { getMyQuota, type MyUsageQuota } from "@/lib/api-client/v1/actions/my-us
 import { getServerTimeZone } from "@/lib/api-client/v1/actions/system-config";
 import { CollapsibleQuotaCard } from "./_components/collapsible-quota-card";
 import { ExpirationInfo } from "./_components/expiration-info";
+import { MyKeysCard } from "./_components/my-keys-card";
 import { MyUsageHeader } from "./_components/my-usage-header";
 import { ProviderGroupInfo } from "./_components/provider-group-info";
 import { StatisticsSummaryCard } from "./_components/statistics-summary-card";
@@ -67,11 +68,13 @@ export default function MyUsagePage() {
         </div>
       ) : null}
 
+      <UsageLogsSection defaultOpen autoRefreshSeconds={30} serverTimeZone={serverTimeZone} />
+
       <CollapsibleQuotaCard quota={quota} loading={isQuotaLoading} />
 
-      <StatisticsSummaryCard serverTimeZone={serverTimeZone} />
+      <MyKeysCard />
 
-      <UsageLogsSection autoRefreshSeconds={30} serverTimeZone={serverTimeZone} />
+      <StatisticsSummaryCard serverTimeZone={serverTimeZone} />
     </div>
   );
 }

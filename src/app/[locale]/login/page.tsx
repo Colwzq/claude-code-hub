@@ -40,10 +40,6 @@ function parseLoginType(value: unknown): LoginType | null {
   return null;
 }
 
-function getLoginTypeFallbackPath(loginType: LoginType): string {
-  return loginType === "readonly_user" ? "/my-usage" : "/dashboard";
-}
-
 function formatVersionLabel(version: string): string {
   const trimmed = version.trim();
   if (!trimmed) return "";
@@ -189,8 +185,7 @@ function LoginPageContent() {
 
       setStatus("success");
       const loginType = parseLoginType(data.loginType);
-      const fallbackPath = loginType ? getLoginTypeFallbackPath(loginType) : from;
-      const redirectTarget = resolveLoginRedirectTarget(data.redirectTo, fallbackPath);
+      const redirectTarget = resolveLoginRedirectTarget(data.redirectTo, from, loginType);
       router.push(redirectTarget);
       router.refresh();
     } catch {

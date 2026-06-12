@@ -1,16 +1,17 @@
 "use client";
 
 import { format } from "date-fns";
-import { BarChart3, ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { BarChart3, ChevronDown, ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ModelBreakdownColumn } from "@/components/analytics/model-breakdown-column";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getMyStatsSummary, type MyStatsSummary } from "@/lib/api-client/v1/actions/my-usage";
-import { formatTokenAmount } from "@/lib/utils";
+import { cn, formatTokenAmount } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/currency";
 import { LogsDateRangePicker } from "../../dashboard/logs/_components/logs-date-range-picker";
 
@@ -18,16 +19,20 @@ interface StatisticsSummaryCardProps {
   className?: string;
   autoRefreshSeconds?: number;
   serverTimeZone?: string;
+  defaultOpen?: boolean;
 }
 
 export function StatisticsSummaryCard({
   className,
   autoRefreshSeconds = 30,
   serverTimeZone,
+  defaultOpen = false,
 }: StatisticsSummaryCardProps) {
   const t = useTranslations("myUsage.stats");
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [stats, setStats] = useState<MyStatsSummary | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [dateRange, setDateRange] = useState<{ startDate?: string; endDate?: string }>(() => {
     const today = format(new Date(), "yyyy-MM-dd");
@@ -45,14 +50,21 @@ export function StatisticsSummaryCard({
     }
   }, [dateRange.startDate, dateRange.endDate]);
 
-  // Initial load on date range change
+  // Load only while the collapsed card is open.
   useEffect(() => {
-    setLoading(true);
-    loadStats().finally(() => setLoading(false));
-  }, [loadStats]);
+    if (!isOpen) return;
 
-  // Auto-refresh with visibility change handling
+    setLoading(true);
+    loadStats().finally(() => {
+      setHasLoaded(true);
+      setLoading(false);
+    });
+  }, [isOpen, loadStats]);
+
+  // Auto-refresh with visibility change handling, active only while expanded.
   useEffect(() => {
+    if (!isOpen) return;
+
     const POLL_INTERVAL = autoRefreshSeconds * 1000;
 
     const startPolling = () => {
@@ -87,7 +99,7 @@ export function StatisticsSummaryCard({
       stopPolling();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [loadStats, autoRefreshSeconds]);
+  }, [isOpen, loadStats, autoRefreshSeconds]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -107,7 +119,7 @@ export function StatisticsSummaryCard({
     setBreakdownPage(1);
   }, [dateRange.startDate, dateRange.endDate]);
 
-  const isLoading = loading || refreshing;
+  const isLoading = loading || refreshing || !hasLoaded;
   const currencyCode = stats?.currencyCode ?? "USD";
 
   const maxBreakdownLen = Math.max(
@@ -121,184 +133,213 @@ export function StatisticsSummaryCard({
   const userPageItems = stats?.userModelBreakdown.slice(sliceStart, sliceEnd) ?? [];
 
   return (
-    <Card className={className}>
-      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between space-y-0 pb-4">
-        <div>
-          <CardTitle className="text-base font-semibold flex items-center gap-2">
-            <BarChart3 className="h-4 w-4" />
-            {t("title")}
-          </CardTitle>
-          <p className="text-xs text-muted-foreground mt-1">
-            {t("autoRefresh", { seconds: autoRefreshSeconds })}
-          </p>
-        </div>
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-          <LogsDateRangePicker
-            startDate={dateRange.startDate}
-            endDate={dateRange.endDate}
-            onDateRangeChange={handleDateRangeChange}
-            serverTimeZone={serverTimeZone}
-          />
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 gap-2"
-            onClick={handleRefresh}
-            disabled={isLoading}
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {loading ? (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, index) => (
-              <div key={index} className="rounded-lg border bg-card/50 p-4 space-y-2">
-                <Skeleton className="h-4 w-24" />
-                <Skeleton className="h-8 w-32" />
-              </div>
-            ))}
-          </div>
-        ) : stats ? (
-          <>
-            {/* Main metrics */}
-            <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
-              {/* Total Requests */}
-              <div className="p-4 border rounded-lg">
-                <div className="text-sm text-muted-foreground mb-1">{t("totalRequests")}</div>
-                <div className="text-2xl font-mono font-semibold">
-                  {stats.totalRequests.toLocaleString()}
-                </div>
-              </div>
-
-              {/* Total Cost */}
-              <div className="p-4 border rounded-lg">
-                <div className="text-sm text-muted-foreground mb-1">{t("totalCost")}</div>
-                <div className="text-2xl font-mono font-semibold">
-                  {formatCurrency(stats.totalCost, currencyCode)}
-                </div>
-              </div>
-
-              {/* Total Tokens */}
-              <div className="p-4 border rounded-lg">
-                <div className="text-sm text-muted-foreground mb-1">{t("totalTokens")}</div>
-                <div className="text-2xl font-mono font-semibold">
-                  {formatTokenAmount(stats.totalTokens)}
-                </div>
-                <div className="mt-2 text-xs text-muted-foreground space-y-1">
-                  <div className="flex justify-between">
-                    <span>{t("input")}:</span>
-                    <span className="font-mono">{formatTokenAmount(stats.totalInputTokens)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>{t("output")}:</span>
-                    <span className="font-mono">{formatTokenAmount(stats.totalOutputTokens)}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Cache Tokens */}
-              <div className="p-4 border rounded-lg">
-                <div className="text-sm text-muted-foreground mb-1">{t("cacheTokens")}</div>
-                <div className="text-2xl font-mono font-semibold">
-                  {formatTokenAmount(stats.totalCacheCreationTokens + stats.totalCacheReadTokens)}
-                </div>
-                <div className="mt-2 text-xs text-muted-foreground space-y-1">
-                  <div className="flex justify-between">
-                    <span>{t("write")}:</span>
-                    <span className="font-mono">
-                      {formatTokenAmount(stats.totalCacheCreationTokens)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>{t("read")}:</span>
-                    <span className="font-mono">
-                      {formatTokenAmount(stats.totalCacheReadTokens)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <Separator />
-
-            {/* Model Breakdown - 2 columns: Key | User */}
-            <div className="space-y-3">
-              <p className="text-sm font-medium text-muted-foreground">{t("modelBreakdown")}</p>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    {t("keyStats")}
+    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+      <Card className={className}>
+        <CardHeader
+          className={cn(
+            "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between space-y-0 pb-0",
+            isOpen && "border-b pb-4"
+          )}
+        >
+          <CollapsibleTrigger asChild>
+            <button type="button" className="min-w-0 flex-1 text-left">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                    <BarChart3 className="h-4 w-4" />
+                    {t("title")}
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {t("autoRefresh", { seconds: autoRefreshSeconds })}
                   </p>
-                  {keyPageItems.length > 0 ? (
-                    <ModelBreakdownColumn
-                      pageItems={keyPageItems}
-                      currencyCode={currencyCode}
-                      totalCost={stats.totalCost}
-                      keyPrefix="key"
-                      pageOffset={sliceStart}
-                    />
-                  ) : (
-                    <p className="text-sm text-muted-foreground">{t("noData")}</p>
+                </div>
+                <ChevronDown
+                  className={cn(
+                    "mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200",
+                    isOpen && "rotate-180"
+                  )}
+                />
+              </div>
+            </button>
+          </CollapsibleTrigger>
+          {isOpen ? (
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+              <LogsDateRangePicker
+                startDate={dateRange.startDate}
+                endDate={dateRange.endDate}
+                onDateRangeChange={handleDateRangeChange}
+                serverTimeZone={serverTimeZone}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 gap-2"
+                onClick={handleRefresh}
+                disabled={isLoading}
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
+          ) : null}
+        </CardHeader>
+        <CollapsibleContent>
+          <CardContent className="space-y-4 pt-4">
+            {isLoading ? (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {Array.from({ length: 4 }).map((_, index) => (
+                  <div key={index} className="rounded-lg border bg-card/50 p-4 space-y-2">
+                    <Skeleton className="h-4 w-24" />
+                    <Skeleton className="h-8 w-32" />
+                  </div>
+                ))}
+              </div>
+            ) : stats ? (
+              <>
+                {/* Main metrics */}
+                <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
+                  {/* Total Requests */}
+                  <div className="p-4 border rounded-lg">
+                    <div className="text-sm text-muted-foreground mb-1">{t("totalRequests")}</div>
+                    <div className="text-2xl font-mono font-semibold">
+                      {stats.totalRequests.toLocaleString()}
+                    </div>
+                  </div>
+
+                  {/* Total Cost */}
+                  <div className="p-4 border rounded-lg">
+                    <div className="text-sm text-muted-foreground mb-1">{t("totalCost")}</div>
+                    <div className="text-2xl font-mono font-semibold">
+                      {formatCurrency(stats.totalCost, currencyCode)}
+                    </div>
+                  </div>
+
+                  {/* Total Tokens */}
+                  <div className="p-4 border rounded-lg">
+                    <div className="text-sm text-muted-foreground mb-1">{t("totalTokens")}</div>
+                    <div className="text-2xl font-mono font-semibold">
+                      {formatTokenAmount(stats.totalTokens)}
+                    </div>
+                    <div className="mt-2 text-xs text-muted-foreground space-y-1">
+                      <div className="flex justify-between">
+                        <span>{t("input")}:</span>
+                        <span className="font-mono">
+                          {formatTokenAmount(stats.totalInputTokens)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>{t("output")}:</span>
+                        <span className="font-mono">
+                          {formatTokenAmount(stats.totalOutputTokens)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cache Tokens */}
+                  <div className="p-4 border rounded-lg">
+                    <div className="text-sm text-muted-foreground mb-1">{t("cacheTokens")}</div>
+                    <div className="text-2xl font-mono font-semibold">
+                      {formatTokenAmount(
+                        stats.totalCacheCreationTokens + stats.totalCacheReadTokens
+                      )}
+                    </div>
+                    <div className="mt-2 text-xs text-muted-foreground space-y-1">
+                      <div className="flex justify-between">
+                        <span>{t("write")}:</span>
+                        <span className="font-mono">
+                          {formatTokenAmount(stats.totalCacheCreationTokens)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>{t("read")}:</span>
+                        <span className="font-mono">
+                          {formatTokenAmount(stats.totalCacheReadTokens)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <Separator />
+
+                {/* Model Breakdown - 2 columns: Key | User */}
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-muted-foreground">{t("modelBreakdown")}</p>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        {t("keyStats")}
+                      </p>
+                      {keyPageItems.length > 0 ? (
+                        <ModelBreakdownColumn
+                          pageItems={keyPageItems}
+                          currencyCode={currencyCode}
+                          totalCost={stats.totalCost}
+                          keyPrefix="key"
+                          pageOffset={sliceStart}
+                        />
+                      ) : (
+                        <p className="text-sm text-muted-foreground">{t("noData")}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        {t("userStats")}
+                      </p>
+                      {userPageItems.length > 0 ? (
+                        <ModelBreakdownColumn
+                          pageItems={userPageItems}
+                          currencyCode={currencyCode}
+                          totalCost={stats.totalCost}
+                          keyPrefix="user"
+                          pageOffset={sliceStart}
+                        />
+                      ) : (
+                        <p className="text-sm text-muted-foreground">{t("noData")}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {breakdownTotalPages > 1 && (
+                    <div className="flex items-center justify-between pt-1">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7"
+                        aria-label={t("breakdownPrevPage")}
+                        disabled={breakdownPage <= 1}
+                        onClick={() => setBreakdownPage((p) => p - 1)}
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </Button>
+                      <span className="text-xs text-muted-foreground">
+                        {t("breakdownPageIndicator", {
+                          current: breakdownPage,
+                          total: breakdownTotalPages,
+                        })}
+                      </span>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7"
+                        aria-label={t("breakdownNextPage")}
+                        disabled={breakdownPage >= breakdownTotalPages}
+                        onClick={() => setBreakdownPage((p) => p + 1)}
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                      </Button>
+                    </div>
                   )}
                 </div>
-
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    {t("userStats")}
-                  </p>
-                  {userPageItems.length > 0 ? (
-                    <ModelBreakdownColumn
-                      pageItems={userPageItems}
-                      currencyCode={currencyCode}
-                      totalCost={stats.totalCost}
-                      keyPrefix="user"
-                      pageOffset={sliceStart}
-                    />
-                  ) : (
-                    <p className="text-sm text-muted-foreground">{t("noData")}</p>
-                  )}
-                </div>
-              </div>
-
-              {breakdownTotalPages > 1 && (
-                <div className="flex items-center justify-between pt-1">
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-7 w-7"
-                    aria-label={t("breakdownPrevPage")}
-                    disabled={breakdownPage <= 1}
-                    onClick={() => setBreakdownPage((p) => p - 1)}
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </Button>
-                  <span className="text-xs text-muted-foreground">
-                    {t("breakdownPageIndicator", {
-                      current: breakdownPage,
-                      total: breakdownTotalPages,
-                    })}
-                  </span>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-7 w-7"
-                    aria-label={t("breakdownNextPage")}
-                    disabled={breakdownPage >= breakdownTotalPages}
-                    onClick={() => setBreakdownPage((p) => p + 1)}
-                  >
-                    <ChevronRight className="h-4 w-4" />
-                  </Button>
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <p className="text-sm text-muted-foreground text-center py-4">{t("noData")}</p>
-        )}
-      </CardContent>
-    </Card>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground text-center py-4">{t("noData")}</p>
+            )}
+          </CardContent>
+        </CollapsibleContent>
+      </Card>
+    </Collapsible>
   );
 }
 

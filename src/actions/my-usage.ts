@@ -18,9 +18,12 @@ import type { DailyResetMode } from "@/lib/rate-limit/time-utils";
 import { SessionTracker } from "@/lib/session-tracker";
 import type { CurrencyCode } from "@/lib/utils";
 import { ERROR_CODES } from "@/lib/utils/error-messages";
+import { normalizeProviderGroup } from "@/lib/utils/provider-group";
 import { resolveSystemTimezone } from "@/lib/utils/timezone";
+import { maskKey } from "@/lib/utils/validation";
 import { LEDGER_BILLING_CONDITION } from "@/repository/_shared/ledger-conditions";
 import { EXCLUDE_WARMUP_CONDITION } from "@/repository/_shared/message-request-conditions";
+import { findKeyList } from "@/repository/key";
 import { getSystemSettings } from "@/repository/system-config";
 import {
   findReadonlyUsageLogsBatchForKey,
@@ -32,8 +35,8 @@ import {
   type UsageLogSummary,
   type UsageLogsBatchResult,
 } from "@/repository/usage-logs";
+import type { HedgeLoserBilling } from "@/types/cost-breakdown";
 import type { IpGeoLookupResult, IpGeoPrivateMarker } from "@/types/ip-geo";
-import type { ProviderChainItem } from "@/types/message";
 import type { SpecialSetting } from "@/types/special-settings";
 import type { BillingModelSource } from "@/types/system-config";
 import type { ActionResult } from "./types";
@@ -42,37 +45,15 @@ async function getErrorTranslator() {
   return getTranslations("errors");
 }
 
-function scrubProviderChainRequestForReadonly(
-  providerChain: ProviderChainItem[] | null
-): ProviderChainItem[] | null {
+function scrubHedgeLosersForReadonly(
+  hedgeLosers: HedgeLoserBilling[] | null | undefined
+): HedgeLoserBilling[] | null {
   return (
-    providerChain?.map((item) => {
-      if (!item.errorDetails) {
-        return item;
-      }
-
-      const { request: _request, provider, ...restErrorDetails } = item.errorDetails;
-      const shouldStronglyScrubProviderError = item.rawCrossProviderFallbackEnabled === true;
-
-      return {
-        ...item,
-        errorDetails: {
-          ...restErrorDetails,
-          clientError: shouldStronglyScrubProviderError ? undefined : restErrorDetails.clientError,
-          provider: provider
-            ? shouldStronglyScrubProviderError
-              ? {
-                  ...provider,
-                  upstreamBody: undefined,
-                  upstreamParsed: undefined,
-                }
-              : {
-                  ...provider,
-                }
-            : undefined,
-        },
-      };
-    }) ?? null
+    hedgeLosers?.map((loser) => ({
+      ...loser,
+      providerId: 0,
+      providerName: "",
+    })) ?? null
   );
 }
 
@@ -80,9 +61,21 @@ function scrubSpecialSettingsForReadonly(
   specialSettings: SpecialSetting[] | null | undefined
 ): SpecialSetting[] | null {
   return (
-    specialSettings?.map((setting) =>
-      setting.type === "guard_intercept" ? { ...setting, reason: null } : setting
-    ) ?? null
+    specialSettings?.map((setting) => {
+      switch (setting.type) {
+        case "guard_intercept":
+          return { ...setting, reason: null };
+        case "provider_parameter_override":
+        case "thinking_signature_rectifier":
+        case "thinking_budget_rectifier":
+        case "gemini_google_search_override":
+          return { ...setting, providerId: null, providerName: null };
+        case "pricing_resolution":
+          return { ...setting, resolvedPricingProviderKey: "" };
+        default:
+          return setting;
+      }
+    }) ?? null
   );
 }
 
@@ -95,14 +88,13 @@ function scrubUsageLogsBatchForReadonly(result: UsageLogsBatchResult): UsageLogs
       keyName: "",
       providerName: null,
       errorMessage: null,
+      blockedBy: null,
       blockedReason: null,
       userAgent: null,
       messagesCount: null,
       _liveChain: null,
-      providerChain: scrubProviderChainRequestForReadonly(log.providerChain),
-      costMultiplier: null,
-      groupCostMultiplier: null,
-      costBreakdown: null,
+      providerChain: null,
+      hedgeLosers: scrubHedgeLosersForReadonly(log.hedgeLosers),
       specialSettings: scrubSpecialSettingsForReadonly(log.specialSettings),
     })),
   };
@@ -216,6 +208,18 @@ export interface MyUsageQuota {
   dailyResetTime: string;
 }
 
+export interface MyKeyListItem {
+  id: number;
+  name: string;
+  maskedKey: string;
+  fullKey: string | null;
+  providerGroup: string;
+  status: "enabled" | "disabled" | "expired";
+  canCopy: boolean;
+  expiresAt: Date | null;
+  createdAt: Date | null;
+}
+
 export interface MyTodayStats {
   calls: number;
   inputTokens: number;
@@ -231,6 +235,48 @@ export interface MyTodayStats {
   }>;
   currencyCode: CurrencyCode;
   billingModelSource: BillingModelSource;
+}
+
+function isExpired(expiresAt: Date | null | undefined): boolean {
+  return Boolean(expiresAt && expiresAt.getTime() <= Date.now());
+}
+
+function getMyKeyStatus(key: {
+  isEnabled: boolean;
+  expiresAt?: Date | null;
+}): MyKeyListItem["status"] {
+  if (!key.isEnabled) return "disabled";
+  if (isExpired(key.expiresAt)) return "expired";
+  return "enabled";
+}
+
+export async function getMyKeys(): Promise<ActionResult<MyKeyListItem[]>> {
+  try {
+    const session = await getSession({ allowReadOnlyAccess: true });
+    if (!session) return { ok: false, error: "Unauthorized" };
+
+    const keys = await findKeyList(session.user.id);
+    return {
+      ok: true,
+      data: keys.map((key) => {
+        const status = getMyKeyStatus(key);
+        return {
+          id: key.id,
+          name: key.name,
+          maskedKey: maskKey(key.key),
+          fullKey: status === "enabled" ? key.key : null,
+          providerGroup: normalizeProviderGroup(key.providerGroup),
+          status,
+          canCopy: status === "enabled",
+          expiresAt: key.expiresAt ?? null,
+          createdAt: key.createdAt ?? null,
+        };
+      }),
+    };
+  } catch (error) {
+    logger.error("[my-usage] getMyKeys failed", error);
+    return { ok: false, error: "Failed to get keys" };
+  }
 }
 
 export interface MyUsageLogEntry {

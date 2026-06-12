@@ -2,6 +2,7 @@
   "header": {
     "title": "My Usage",
     "welcome": "Welcome, {name}",
+    "modelMarket": "Model Market",
     "logout": "Logout",
     "keyLabel": "Key",
     "userLabel": "User",
@@ -112,6 +113,33 @@
       "performanceMedium": "Medium",
       "performanceLow": "Low"
     }
+  },
+  "keys": {
+    "title": "My Keys",
+    "description": "Keys under your account. Available keys can be copied for client use.",
+    "refresh": "Refresh",
+    "loading": "Loading keys...",
+    "loadFailed": "Failed to load keys",
+    "empty": "No keys",
+    "name": "Name",
+    "key": "Key",
+    "purpose": "Purpose",
+    "status": "Status",
+    "expiresAt": "Expires At",
+    "createdAt": "Created At",
+    "actions": "Actions",
+    "copy": "Copy",
+    "copying": "Copying",
+    "copySuccess": "Key copied",
+    "copyFailed": "Copy failed",
+    "copyUnavailable": "This key cannot be copied right now",
+    "neverExpires": "Never",
+    "purposeChat": "Chat Client",
+    "purposeCode": "Coding Client",
+    "purposeApi": "API Key",
+    "statusEnabled": "Available",
+    "statusDisabled": "Disabled",
+    "statusExpired": "Expired"
   },
   "accessRestrictions": {
     "title": "Access Restrictions",
