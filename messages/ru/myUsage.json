@@ -3,6 +3,7 @@
     "title": "Мои расходы",
     "welcome": "Добро пожаловать, {name}",
     "modelMarket": "Витрина моделей",
+    "documentation": "Документация",
     "logout": "Выйти",
     "keyLabel": "Ключ",
     "userLabel": "Пользователь",

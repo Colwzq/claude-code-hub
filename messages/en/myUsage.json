@@ -3,6 +3,7 @@
     "title": "My Usage",
     "welcome": "Welcome, {name}",
     "modelMarket": "Model Market",
+    "documentation": "Usage Docs",
     "logout": "Logout",
     "keyLabel": "Key",
     "userLabel": "User",

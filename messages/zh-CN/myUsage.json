@@ -3,6 +3,7 @@
     "title": "我的用量",
     "welcome": "欢迎，{name}",
     "modelMarket": "模型广场",
+    "documentation": "使用文档",
     "logout": "退出登录",
     "keyLabel": "密钥",
     "userLabel": "用户",
